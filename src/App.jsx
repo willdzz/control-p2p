@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
@@ -17,9 +17,7 @@ import {
   serverTimestamp, 
   deleteDoc, 
   doc, 
-  updateDoc,
-  setDoc,
-  getDoc
+  setDoc
 } from 'firebase/firestore';
 import { 
   ArrowRightLeft, 
@@ -30,7 +28,6 @@ import {
   Users, 
   LogOut, 
   Calculator,
-  AlertTriangle,
   Landmark,
   PiggyBank,
   ArrowUpRight,
@@ -53,7 +50,8 @@ const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
 // --- COMPONENTE PRINCIPAL ---
-export default function P2PTraderPro() {
+// Renombrado a App para consistencia con Vite/Vercel
+export default function App() {
   const [user, setUser] = useState(null);
   const [view, setView] = useState('dashboard'); // dashboard, trade, loans, calculator
   const [transactions, setTransactions] = useState([]);
@@ -70,11 +68,11 @@ export default function P2PTraderPro() {
     return () => unsubscribe();
   }, []);
 
-  // Data Fetching
+  // Data Fetching (Solo si hay usuario)
   useEffect(() => {
     if (!user) return;
 
-    const appId = 'p2p-v2-production'; 
+    const appId = 'p2p-v2-production'; // Namespace para separar de la V1
 
     // 1. Cargar Transacciones
     const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
@@ -82,11 +80,11 @@ export default function P2PTraderPro() {
       setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
-    // 2. Cargar Inventario
+    // 2. Cargar Inventario (Estado actual de cuentas)
     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
     const unsubInv = onSnapshot(docRef, (snap) => {
       if (snap.exists()) setInventory(snap.data());
-      else setInventory({ usdt: 0, ves: 0, avgPrice: 0 }); 
+      else setInventory({ usdt: 0, ves: 0, avgPrice: 0 }); // Valor inicial
       setLoading(false);
     });
 
@@ -99,9 +97,10 @@ export default function P2PTraderPro() {
     return () => { unsubTx(); unsubInv(); unsubLoans(); };
   }, [user]);
 
-  // --- LÓGICA DE NEGOCIO ---
+  // --- LÓGICA DE NEGOCIO (El Corazón del P2P) ---
 
   const handleTrade = async (data) => {
+    // data: { type: 'buy'|'sell'|'expense', amountUSDT, rate, feeBS, feeUSDT, bank, exchange }
     const appId = 'p2p-v2-production';
     
     let newInv = { ...inventory };
@@ -109,40 +108,46 @@ export default function P2PTraderPro() {
 
     // 1. Calcular Efecto en Inventario (Promedio Ponderado)
     if (data.type === 'buy') {
+      // COMPRA: Entra USDT, Sale VES. El precio promedio cambia.
       const totalCostOld = newInv.usdt * newInv.avgPrice;
-      const costNew = (data.amountUSDT * data.rate) + (data.feeBS || 0); 
+      const costNew = (data.amountUSDT * data.rate) + (data.feeBS || 0); // Costo en Bs
       
       const totalUSDT = newInv.usdt + data.amountUSDT - (data.feeUSDT || 0);
       const totalCost = totalCostOld + costNew;
       
+      // Evitar división por cero
       newInv.avgPrice = totalUSDT > 0 ? totalCost / totalUSDT : 0;
       newInv.usdt = totalUSDT;
       newInv.ves -= costNew;
 
     } else if (data.type === 'sell') {
+      // VENTA: Sale USDT, Entra VES. Se realiza ganancia/pérdida.
+      // El precio promedio NO cambia en venta (FIFO/Promedio simple).
       const revenueVES = (data.amountUSDT * data.rate) - (data.feeBS || 0);
-      const costOfSold = data.amountUSDT * newInv.avgPrice; 
+      const costOfSold = data.amountUSDT * newInv.avgPrice; // Costo de lo que vendí
       
-      profit = revenueVES - costOfSold; 
+      profit = revenueVES - costOfSold; // Ganancia en Bs
+      // Convertir ganancia a USDT referencial para el historial
       data.profitUSDT = data.rate > 0 ? profit / data.rate : 0;
 
       newInv.usdt -= data.amountUSDT + (data.feeUSDT || 0);
       newInv.ves += revenueVES;
     
     } else if (data.type === 'expense') {
+      // GASTO: Solo sale VES (Gastos personales)
       newInv.ves -= data.amountBS;
     }
 
     // 2. Guardar Transacción
     await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), {
       ...data,
-      avgPriceAtMoment: inventory.avgPrice,
+      avgPriceAtMoment: inventory.avgPrice, // Guardar el promedio que había en ese momento
       createdAt: serverTimestamp()
     });
 
     // 3. Actualizar Inventario Global
     const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
-    await setDoc(invRef, newInv);
+    await setDoc(invRef, newInv); // Usamos setDoc para crear si no existe
     
     setView('dashboard');
   };
@@ -181,6 +186,7 @@ export default function P2PTraderPro() {
             <h2 className="text-xs text-slate-400 font-semibold tracking-wider uppercase">Patrimonio Neto</h2>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-bold text-white">
+                {/* Estimado total en USDT (USDT reales + Bs convertidos al promedio) */}
                 $ {(inventory.usdt + (inventory.ves / (inventory.avgPrice || 1))).toFixed(2)}
               </span>
               <span className="text-xs text-slate-500">USDT (Est.)</span>
@@ -230,7 +236,7 @@ export default function P2PTraderPro() {
   );
 }
 
-// --- SUB-COMPONENTES ---
+// --- SUB-COMPONENTES (Módulos) ---
 
 function Dashboard({ transactions }) {
   return (
@@ -332,11 +338,12 @@ function TradeForm({ onTrade, onCancel, avgPrice }) {
             </div>
           </div>
 
-          <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
+          <div className="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
+            {/* AQUÍ ESTÁN LOS CAMBIOS V2.1: Agregados BingX y Bitget */}
             <Chip active={exchange === 'Binance'} onClick={() => setExchange('Binance')}>Binance</Chip>
-            <Chip active={exchange === 'OKX'} onClick={() => setExchange('OKX')}>OKX</Chip>
             <Chip active={exchange === 'BingX'} onClick={() => setExchange('BingX')}>BingX</Chip>
             <Chip active={exchange === 'Bitget'} onClick={() => setExchange('Bitget')}>Bitget</Chip>
+            <Chip active={exchange === 'OKX'} onClick={() => setExchange('OKX')}>OKX</Chip>
             <Chip active={exchange === 'CoinEx'} onClick={() => setExchange('CoinEx')}>CoinEx</Chip>
             <Chip active={exchange === 'Telegram'} onClick={() => setExchange('Telegram')}>Telegram</Chip>
           </div>
@@ -416,4 +423,92 @@ function LoansModule({ loans, user, db, appId }) {
 
   return (
     <div className="space-y-4">
-      <div className="bg-slate-900 p-4 rounded-xl border border
+      <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+        <h3 className="text-sm font-bold text-slate-300 mb-3 flex items-center gap-2"><PiggyBank size={16}/> Nuevo Préstamo</h3>
+        <div className="flex gap-2 mb-2">
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="¿Quién?" className="flex-[2] bg-slate-950 p-2 rounded text-sm text-white border border-slate-700"/>
+          <input value={amount} onChange={e=>setAmount(e.target.value)} type="number" placeholder="Monto" className="flex-1 bg-slate-950 p-2 rounded text-sm text-white border border-slate-700"/>
+        </div>
+        <div className="flex justify-between items-center">
+          <select value={currency} onChange={e=>setCurrency(e.target.value)} className="bg-slate-950 text-white text-xs p-2 rounded border border-slate-700">
+            <option value="USD">USD (Fijo)</option>
+            <option value="VES">VES (Bs)</option>
+          </select>
+          <button onClick={addLoan} className="bg-indigo-600 px-4 py-2 rounded text-xs font-bold text-white">Prestar</button>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {loans.map(loan => (
+          <div key={loan.id} className="flex justify-between items-center bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+            <div>
+              <p className="text-sm font-bold text-white">{loan.debtor}</p>
+              <p className="text-xs text-slate-500">{new Date(loan.createdAt?.seconds * 1000).toLocaleDateString()}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-indigo-400">{loan.amount} {loan.currency}</span>
+              <button onClick={() => settleLoan(loan.id)} className="text-emerald-500 text-xs border border-emerald-500/30 px-2 py-1 rounded hover:bg-emerald-500/10">Cobrar</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ArbitrageCalc() {
+  const [buy, setBuy] = useState('');
+  const [sell, setSell] = useState('');
+  const [amount, setAmount] = useState('100');
+  
+  const gap = parseFloat(sell) - parseFloat(buy);
+  const profit = (gap * parseFloat(amount)) / parseFloat(sell); // Aprox simple
+  const percent = parseFloat(buy) > 0 ? ((parseFloat(sell) - parseFloat(buy)) / parseFloat(buy)) * 100 : 0;
+
+  return (
+    <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800">
+      <h3 className="text-lg font-bold text-white mb-4 flex gap-2"><Calculator/> Calculadora Rápida</h3>
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <div>
+           <label className="text-xs text-blue-400">Precio Compra</label>
+           <input type="number" value={buy} onChange={e=>setBuy(e.target.value)} className="w-full bg-slate-950 p-3 rounded text-white border border-slate-700"/>
+        </div>
+        <div>
+           <label className="text-xs text-emerald-400">Precio Venta</label>
+           <input type="number" value={sell} onChange={e=>setSell(e.target.value)} className="w-full bg-slate-950 p-3 rounded text-white border border-slate-700"/>
+        </div>
+      </div>
+      <div className="mb-6">
+        <label className="text-xs text-slate-400">Capital (USDT)</label>
+        <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} className="w-full bg-slate-950 p-3 rounded text-white border border-slate-700"/>
+      </div>
+      
+      <div className="bg-slate-950 p-4 rounded-xl text-center">
+        <p className="text-xs text-slate-500 mb-1">Rentabilidad Estimada</p>
+        <h2 className={`text-3xl font-bold ${percent > 1 ? 'text-emerald-400' : percent > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+          {percent.toFixed(2)}%
+        </h2>
+        <p className="text-sm text-slate-300 mt-1">
+          + {profit.toFixed(2)} USDT
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function NavButton({ icon, label, active, onClick }) {
+  return (
+    <button onClick={onClick} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${active ? 'text-emerald-400 bg-emerald-400/10' : 'text-slate-500'}`}>
+      {React.cloneElement(icon, { size: 20 })}
+      <span className="text-[10px] font-medium">{label}</span>
+    </button>
+  );
+}
+
+function Chip({ children, active, onClick }) {
+  return (
+    <button onClick={onClick} className={`px-3 py-1 rounded-full text-[10px] font-bold whitespace-nowrap border transition-all ${active ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>
+      {children}
+    </button>
+  );
+}
