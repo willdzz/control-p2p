@@ -32,7 +32,8 @@ import {
   PiggyBank,
   ArrowUpRight,
   ArrowDownLeft,
-  PlusCircle
+  PlusCircle,
+  Trash2
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -95,13 +96,13 @@ export default function App() {
   }, [user]);
 
   // --- LÓGICA DE NEGOCIO ---
+  const appId = 'p2p-v2-production';
+
   const handleTrade = async (data) => {
-    const appId = 'p2p-v2-production';
     let newInv = { ...inventory };
     let profit = 0;
 
     if (data.type === 'buy') {
-      // COMPRA: Entra USDT, Sale VES
       const totalCostOld = newInv.usdt * newInv.avgPrice;
       const costNew = (data.amountUSDT * data.rate) + (data.feeBS || 0);
       
@@ -113,7 +114,6 @@ export default function App() {
       newInv.ves -= costNew;
 
     } else if (data.type === 'sell') {
-      // VENTA: Sale USDT, Entra VES
       const revenueVES = (data.amountUSDT * data.rate) - (data.feeBS || 0);
       const costOfSold = data.amountUSDT * newInv.avgPrice;
       
@@ -124,19 +124,14 @@ export default function App() {
       newInv.ves += revenueVES;
     
     } else if (data.type === 'expense') {
-      // GASTO: Sale VES
       newInv.ves -= data.amountBS;
 
     } else if (data.type === 'capital') {
-      // INYECCIÓN DE CAPITAL (FONDEO)
       if (data.currency === 'VES') {
         newInv.ves += data.amount;
       } else if (data.currency === 'USDT') {
-        // Al agregar USDT, necesitamos recalcular el precio promedio ponderado
-        // data.rate aquí funciona como el "Costo Base" de esos USDT ingresados
         const totalCostOld = newInv.usdt * newInv.avgPrice;
         const costNew = data.amount * (data.rate || 0); 
-        
         const totalUSDT = newInv.usdt + data.amount;
         const totalCost = totalCostOld + costNew;
         
@@ -153,9 +148,64 @@ export default function App() {
 
     const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
     await setDoc(invRef, newInv);
-    
     setView('dashboard');
   };
+
+  // --- NUEVA LÓGICA V2.3: Eliminar Transacción y Revertir Saldo ---
+  const handleDeleteTransaction = async (tx) => {
+    if(!confirm("¿Borrar esta transacción y revertir los saldos?")) return;
+
+    let newInv = { ...inventory };
+
+    // Lógica inversa
+    if (tx.type === 'buy') {
+      // Revertir Compra: Devuelve Bs, Resta USDT
+      const costWas = (tx.amountUSDT * tx.rate) + (tx.feeBS || 0);
+      const usdtWasAdded = tx.amountUSDT - (tx.feeUSDT || 0);
+
+      // Revertir Promedio (Aproximación matemática inversa)
+      const currentTotalValue = newInv.usdt * newInv.avgPrice;
+      const previousTotalValue = currentTotalValue - costWas;
+      const previousUSDT = newInv.usdt - usdtWasAdded;
+
+      newInv.usdt = previousUSDT;
+      newInv.ves += costWas;
+      newInv.avgPrice = previousUSDT > 0 ? previousTotalValue / previousUSDT : 0;
+
+    } else if (tx.type === 'sell') {
+      // Revertir Venta: Devuelve USDT, Resta Bs (Avg Price no cambia en venta)
+      const revenueWas = (tx.amountUSDT * tx.rate) - (tx.feeBS || 0);
+      const usdtWasDeduced = tx.amountUSDT + (tx.feeUSDT || 0);
+
+      newInv.usdt += usdtWasDeduced;
+      newInv.ves -= revenueWas;
+
+    } else if (tx.type === 'expense') {
+      // Revertir Gasto: Devuelve Bs
+      newInv.ves += tx.amountBS;
+
+    } else if (tx.type === 'capital') {
+       if (tx.currency === 'VES') {
+         newInv.ves -= tx.amount;
+       } else if (tx.currency === 'USDT') {
+         const costWas = tx.amount * (tx.rate || 0);
+         const currentTotalValue = newInv.usdt * newInv.avgPrice;
+         const previousTotalValue = currentTotalValue - costWas;
+         const previousUSDT = newInv.usdt - tx.amount;
+
+         newInv.usdt = previousUSDT;
+         newInv.avgPrice = previousUSDT > 0 ? previousTotalValue / previousUSDT : 0;
+       }
+    }
+
+    // 1. Eliminar doc
+    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id));
+
+    // 2. Actualizar inventario
+    const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
+    await setDoc(invRef, newInv);
+  };
+
 
   if (!user) {
     return (
@@ -219,7 +269,7 @@ export default function App() {
 
       {/* BODY */}
       <div className="p-4">
-        {view === 'dashboard' && <Dashboard transactions={transactions} />}
+        {view === 'dashboard' && <Dashboard transactions={transactions} onDelete={handleDeleteTransaction} />}
         {view === 'trade' && <TradeForm onTrade={handleTrade} onCancel={() => setView('dashboard')} avgPrice={inventory.avgPrice} />}
         {view === 'loans' && <LoansModule loans={loans} user={user} db={db} appId={'p2p-v2-production'} />}
         {view === 'calculator' && <ArbitrageCalc />}
@@ -238,7 +288,7 @@ export default function App() {
 
 // --- SUB-COMPONENTES ---
 
-function Dashboard({ transactions }) {
+function Dashboard({ transactions, onDelete }) {
   return (
     <div className="space-y-4 pb-20">
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Actividad Reciente</h3>
@@ -246,7 +296,7 @@ function Dashboard({ transactions }) {
         <p className="text-slate-600 text-center py-10">Sin movimientos. ¡Hora de fondear!</p>
       ) : (
         transactions.map(tx => (
-          <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center">
+          <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
             <div className="flex items-center gap-3">
               <div className={`p-2 rounded-full ${
                 tx.type === 'sell' ? 'bg-emerald-500/20 text-emerald-400' : 
@@ -272,17 +322,28 @@ function Dashboard({ transactions }) {
                 </p>
               </div>
             </div>
-            <div className="text-right">
-              <p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-emerald-400' : 'text-slate-200'}`}>
-                {tx.type === 'expense' ? `-Bs ${tx.amountBS}` : 
-                 tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${tx.amount}` : `+$${tx.amount}`) :
-                 `$${tx.amountUSDT}`}
-              </p>
-              {tx.profitUSDT && (
-                <p className={`text-[10px] ${tx.profitUSDT > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                  PnL: {tx.profitUSDT > 0 ? '+' : ''}{tx.profitUSDT.toFixed(2)}
+            
+            <div className="flex items-center gap-4">
+              <div className="text-right">
+                <p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-emerald-400' : 'text-slate-200'}`}>
+                  {tx.type === 'expense' ? `-Bs ${tx.amountBS}` : 
+                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${tx.amount}` : `+$${tx.amount}`) :
+                   `$${tx.amountUSDT}`}
                 </p>
-              )}
+                {tx.profitUSDT && (
+                  <p className={`text-[10px] ${tx.profitUSDT > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                    PnL: {tx.profitUSDT > 0 ? '+' : ''}{tx.profitUSDT.toFixed(2)}
+                  </p>
+                )}
+              </div>
+              {/* Botón de borrar (V2.3) */}
+              <button 
+                onClick={() => onDelete(tx)}
+                className="p-2 text-slate-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
+                title="Borrar y revertir"
+              >
+                <Trash2 size={16} />
+              </button>
             </div>
           </div>
         ))
