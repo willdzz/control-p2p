@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
@@ -17,7 +17,9 @@ import {
   serverTimestamp, 
   deleteDoc, 
   doc, 
-  setDoc
+  setDoc,
+  where,
+  Timestamp
 } from 'firebase/firestore';
 import { 
   ArrowRightLeft, 
@@ -33,7 +35,10 @@ import {
   ArrowUpRight,
   ArrowDownLeft,
   PlusCircle,
-  Trash2
+  Trash2,
+  RefreshCw,
+  Edit2,
+  Calendar
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -54,11 +59,12 @@ const provider = new GoogleAuthProvider();
 // --- COMPONENTE PRINCIPAL ---
 export default function App() {
   const [user, setUser] = useState(null);
-  const [view, setView] = useState('dashboard'); // dashboard, trade, loans, calculator
+  const [view, setView] = useState('dashboard');
   const [transactions, setTransactions] = useState([]);
   const [inventory, setInventory] = useState({ usdt: 0, ves: 0, avgPrice: 0 });
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [editingAvg, setEditingAvg] = useState(false); // Estado para editar promedio
 
   // Auth Listener
   useEffect(() => {
@@ -72,7 +78,6 @@ export default function App() {
   // Data Fetching
   useEffect(() => {
     if (!user) return;
-
     const appId = 'p2p-v2-production';
 
     const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
@@ -103,10 +108,11 @@ export default function App() {
     let profit = 0;
 
     if (data.type === 'buy') {
+      // COMPRA: Costo = (USDT * Tasa) + Comisión Banco (si aplica)
       const totalCostOld = newInv.usdt * newInv.avgPrice;
-      const costNew = (data.amountUSDT * data.rate) + (data.feeBS || 0);
+      const costNew = data.totalBS; // Este monto ya incluye fee bancario si se marcó
       
-      const totalUSDT = newInv.usdt + data.amountUSDT - (data.feeUSDT || 0);
+      const totalUSDT = newInv.usdt + data.amountUSDT; // En compra P2P recibes el USDT neto
       const totalCost = totalCostOld + costNew;
       
       newInv.avgPrice = totalUSDT > 0 ? totalCost / totalUSDT : 0;
@@ -114,15 +120,27 @@ export default function App() {
       newInv.ves -= costNew;
 
     } else if (data.type === 'sell') {
-      const revenueVES = (data.amountUSDT * data.rate) - (data.feeBS || 0);
+      // VENTA: Revenue = Total Bs Recibidos
+      const revenueVES = data.totalBS; 
       const costOfSold = data.amountUSDT * newInv.avgPrice;
       
       profit = revenueVES - costOfSold;
       data.profitUSDT = data.rate > 0 ? profit / data.rate : 0;
 
-      newInv.usdt -= data.amountUSDT + (data.feeUSDT || 0);
+      // Restamos el USDT vendido + la comisión del exchange (ej. 0.06 o 0.2%)
+      newInv.usdt -= (data.amountUSDT + (data.feeUSDT || 0));
       newInv.ves += revenueVES;
     
+    } else if (data.type === 'swap') {
+      // SWAP: Solo resta fee de USDT, no toca Bs. Sube el precio promedio.
+      // Ejemplo: Muevo 100, pago 1 de fee. Tengo 99, pero me costaron lo mismo que los 100.
+      const fee = data.feeUSDT || 0;
+      const totalCost = newInv.usdt * newInv.avgPrice; // El costo total en Bs se mantiene
+      const newTotalUSDT = newInv.usdt - fee;
+
+      newInv.usdt = newTotalUSDT;
+      newInv.avgPrice = newTotalUSDT > 0 ? totalCost / newTotalUSDT : 0;
+
     } else if (data.type === 'expense') {
       newInv.ves -= data.amountBS;
 
@@ -151,59 +169,65 @@ export default function App() {
     setView('dashboard');
   };
 
-  // --- NUEVA LÓGICA V2.3: Eliminar Transacción y Revertir Saldo ---
   const handleDeleteTransaction = async (tx) => {
-    if(!confirm("¿Borrar esta transacción y revertir los saldos?")) return;
-
+    if(!confirm("¿Borrar transacción y revertir saldos?")) return;
     let newInv = { ...inventory };
 
-    // Lógica inversa
+    // Lógica inversa simplificada para V2.4
     if (tx.type === 'buy') {
-      // Revertir Compra: Devuelve Bs, Resta USDT
-      const costWas = (tx.amountUSDT * tx.rate) + (tx.feeBS || 0);
-      const usdtWasAdded = tx.amountUSDT - (tx.feeUSDT || 0);
+      // Devolver Bs (Costo total reportado), Restar USDT
+      const totalCost = tx.totalBS; // Usamos el totalBS guardado que incluye fees
+      const currentTotalVal = newInv.usdt * newInv.avgPrice;
+      const prevTotalVal = currentTotalVal - totalCost;
+      const prevUSDT = newInv.usdt - tx.amountUSDT;
 
-      // Revertir Promedio (Aproximación matemática inversa)
-      const currentTotalValue = newInv.usdt * newInv.avgPrice;
-      const previousTotalValue = currentTotalValue - costWas;
-      const previousUSDT = newInv.usdt - usdtWasAdded;
-
-      newInv.usdt = previousUSDT;
-      newInv.ves += costWas;
-      newInv.avgPrice = previousUSDT > 0 ? previousTotalValue / previousUSDT : 0;
+      newInv.usdt = prevUSDT;
+      newInv.ves += totalCost;
+      newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
 
     } else if (tx.type === 'sell') {
-      // Revertir Venta: Devuelve USDT, Resta Bs (Avg Price no cambia en venta)
-      const revenueWas = (tx.amountUSDT * tx.rate) - (tx.feeBS || 0);
-      const usdtWasDeduced = tx.amountUSDT + (tx.feeUSDT || 0);
+      // Devolver USDT (Monto + Fee), Restar Bs
+      const totalUSDTBack = tx.amountUSDT + (tx.feeUSDT || 0);
+      newInv.usdt += totalUSDTBack;
+      newInv.ves -= tx.totalBS;
 
-      newInv.usdt += usdtWasDeduced;
-      newInv.ves -= revenueWas;
+    } else if (tx.type === 'swap') {
+      // Devolver Fee USDT
+      const fee = tx.feeUSDT || 0;
+      const currentTotalVal = newInv.usdt * newInv.avgPrice; // Costo total (no cambió en swap)
+      const prevUSDT = newInv.usdt + fee;
+      newInv.usdt = prevUSDT;
+      newInv.avgPrice = prevUSDT > 0 ? currentTotalVal / prevUSDT : 0;
 
     } else if (tx.type === 'expense') {
-      // Revertir Gasto: Devuelve Bs
       newInv.ves += tx.amountBS;
 
     } else if (tx.type === 'capital') {
-       if (tx.currency === 'VES') {
-         newInv.ves -= tx.amount;
-       } else if (tx.currency === 'USDT') {
+       if (tx.currency === 'VES') newInv.ves -= tx.amount;
+       else if (tx.currency === 'USDT') {
          const costWas = tx.amount * (tx.rate || 0);
-         const currentTotalValue = newInv.usdt * newInv.avgPrice;
-         const previousTotalValue = currentTotalValue - costWas;
-         const previousUSDT = newInv.usdt - tx.amount;
-
-         newInv.usdt = previousUSDT;
-         newInv.avgPrice = previousUSDT > 0 ? previousTotalValue / previousUSDT : 0;
+         const currentTotalVal = newInv.usdt * newInv.avgPrice;
+         const prevTotalVal = currentTotalVal - costWas;
+         const prevUSDT = newInv.usdt - tx.amount;
+         newInv.usdt = prevUSDT;
+         newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
        }
     }
 
-    // 1. Eliminar doc
     await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id));
-
-    // 2. Actualizar inventario
     const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
     await setDoc(invRef, newInv);
+  };
+
+  const handleUpdateAvg = async (newVal) => {
+    const price = parseFloat(newVal);
+    if(price > 0) {
+      const newInv = { ...inventory, avgPrice: price };
+      setInventory(newInv);
+      const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
+      await setDoc(invRef, newInv);
+      setEditingAvg(false);
+    }
   };
 
 
@@ -214,7 +238,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Tu terminal táctica de arbitraje. Control de inventario, promedio ponderado y deudas.</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V2.4 - Precisión decimal y control de fees.</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -248,12 +272,27 @@ export default function App() {
 
         <div className="grid grid-cols-2 gap-3">
           <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
-            <div className="flex items-center gap-2 mb-1">
-              <Wallet size={14} className="text-emerald-400"/>
-              <span className="text-xs text-slate-400">Inventario USDT</span>
+            <div className="flex items-center gap-2 mb-1 justify-between">
+              <div className="flex items-center gap-2">
+                <Wallet size={14} className="text-emerald-400"/>
+                <span className="text-xs text-slate-400">Inventario USDT</span>
+              </div>
+              <button onClick={() => setEditingAvg(!editingAvg)} className="text-xs text-slate-600 hover:text-white"><Edit2 size={12}/></button>
             </div>
-            <p className="text-lg font-mono font-bold text-white">{inventory.usdt.toFixed(2)}</p>
-            <p className="text-[10px] text-slate-500">Costo Prom: <span className="text-emerald-400">{inventory.avgPrice.toFixed(2)}</span></p>
+            <p className="text-lg font-mono font-bold text-white">{inventory.usdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
+            
+            {editingAvg ? (
+               <input 
+                 autoFocus
+                 type="number" 
+                 className="w-full bg-slate-950 text-xs p-1 rounded border border-slate-600 text-white"
+                 defaultValue={inventory.avgPrice}
+                 onBlur={(e) => handleUpdateAvg(e.target.value)}
+                 onKeyDown={(e) => e.key === 'Enter' && handleUpdateAvg(e.currentTarget.value)}
+               />
+            ) : (
+               <p className="text-[10px] text-slate-500">Costo Prom: <span className="text-emerald-400">{inventory.avgPrice.toFixed(4)}</span></p>
+            )}
           </div>
           
           <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
@@ -261,7 +300,7 @@ export default function App() {
               <Landmark size={14} className="text-blue-400"/>
               <span className="text-xs text-slate-400">Liquidez VES</span>
             </div>
-            <p className="text-lg font-mono font-bold text-white">{inventory.ves.toLocaleString()}</p>
+            <p className="text-lg font-mono font-bold text-white">{inventory.ves.toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
             <p className="text-[10px] text-slate-500">Bs Disponibles</p>
           </div>
         </div>
@@ -286,63 +325,97 @@ export default function App() {
   );
 }
 
-// --- SUB-COMPONENTES ---
+// --- MÓDULOS DE INTERFAZ ---
 
 function Dashboard({ transactions, onDelete }) {
+  // Estadísticas del día (V2.4)
+  const todayStats = useMemo(() => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0,0,0,0);
+    
+    const todays = transactions.filter(t => t.createdAt?.seconds * 1000 > startOfDay.getTime());
+    
+    const sold = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + curr.totalBS, 0);
+    const profit = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
+    const spent = todays.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amountBS, 0);
+
+    return { count: todays.length, sold, profit, spent };
+  }, [transactions]);
+
   return (
     <div className="space-y-4 pb-20">
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Actividad Reciente</h3>
+      
+      {/* Resumen Diario (Nuevo V2.4) */}
+      <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex justify-between items-center">
+        <div>
+          <p className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1"><Calendar size={10}/> Resumen Hoy</p>
+          <p className="text-xs text-slate-500 mt-1">Ventas: <span className="text-white font-mono">{todayStats.sold.toLocaleString()} Bs</span></p>
+          <p className="text-xs text-slate-500">Gastos: <span className="text-red-400 font-mono">{todayStats.spent.toLocaleString()} Bs</span></p>
+        </div>
+        <div className="text-right">
+           <p className="text-[10px] text-slate-400 uppercase font-bold">Profit Est.</p>
+           <p className={`text-xl font-bold ${todayStats.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+             {todayStats.profit >= 0 ? '+' : ''}{todayStats.profit.toFixed(2)}
+           </p>
+           <p className="text-[10px] text-slate-600">{todayStats.count} Ops.</p>
+        </div>
+      </div>
+
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Historial</h3>
       {transactions.length === 0 ? (
-        <p className="text-slate-600 text-center py-10">Sin movimientos. ¡Hora de fondear!</p>
+        <p className="text-slate-600 text-center py-10">Sin movimientos.</p>
       ) : (
         transactions.map(tx => (
-          <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
+          <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group">
             <div className="flex items-center gap-3">
               <div className={`p-2 rounded-full ${
                 tx.type === 'sell' ? 'bg-emerald-500/20 text-emerald-400' : 
                 tx.type === 'buy' ? 'bg-blue-500/20 text-blue-400' : 
                 tx.type === 'capital' ? 'bg-purple-500/20 text-purple-400' :
+                tx.type === 'swap' ? 'bg-orange-500/20 text-orange-400' :
                 'bg-red-500/20 text-red-400'
               }`}>
                 {tx.type === 'sell' ? <ArrowUpRight size={18}/> : 
                  tx.type === 'buy' ? <ArrowDownLeft size={18}/> : 
                  tx.type === 'capital' ? <PlusCircle size={18}/> :
+                 tx.type === 'swap' ? <RefreshCw size={18}/> :
                  <TrendingDown size={18}/>}
               </div>
               <div>
                 <p className="font-bold text-sm text-slate-200">
                   {tx.type === 'sell' ? 'Venta USDT' : 
                    tx.type === 'buy' ? 'Compra USDT' : 
-                   tx.type === 'capital' ? 'Fondeo de Capital' :
+                   tx.type === 'capital' ? 'Fondeo' :
+                   tx.type === 'swap' ? 'Swap / Transfer' :
                    tx.description || 'Gasto'}
                 </p>
-                <p className="text-xs text-slate-500">
-                  {tx.type === 'capital' ? `${tx.currency} • Ingreso` :
-                   tx.type !== 'expense' ? `@ ${tx.rate} • ${tx.exchange}` : 'Gasto Personal'}
+                <p className="text-[10px] text-slate-500">
+                  {tx.type === 'swap' ? `Fee: ${tx.feeUSDT} USDT` :
+                   tx.type === 'capital' ? `${tx.currency}` :
+                   tx.type !== 'expense' ? `@ ${tx.rate} • ${tx.exchange}` : 'Personal'}
                 </p>
               </div>
             </div>
             
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
               <div className="text-right">
                 <p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-emerald-400' : 'text-slate-200'}`}>
-                  {tx.type === 'expense' ? `-Bs ${tx.amountBS}` : 
-                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${tx.amount}` : `+$${tx.amount}`) :
-                   `$${tx.amountUSDT}`}
+                  {tx.type === 'expense' ? `-Bs ${tx.amountBS.toLocaleString()}` : 
+                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${tx.amount.toLocaleString()}` : `+$${tx.amount}`) :
+                   tx.type === 'swap' ? `-$${tx.feeUSDT}` :
+                   `$${tx.amountUSDT.toFixed(2)}`}
                 </p>
-                {tx.profitUSDT && (
+                {tx.profitUSDT !== undefined && (
                   <p className={`text-[10px] ${tx.profitUSDT > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                    PnL: {tx.profitUSDT > 0 ? '+' : ''}{tx.profitUSDT.toFixed(2)}
+                    {tx.profitUSDT.toFixed(2)} PnL
                   </p>
                 )}
               </div>
-              {/* Botón de borrar (V2.3) */}
               <button 
                 onClick={() => onDelete(tx)}
-                className="p-2 text-slate-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
-                title="Borrar y revertir"
+                className="p-2 text-slate-700 hover:text-red-500 transition-colors"
               >
-                <Trash2 size={16} />
+                <Trash2 size={14} />
               </button>
             </div>
           </div>
@@ -353,148 +426,227 @@ function Dashboard({ transactions, onDelete }) {
 }
 
 function TradeForm({ onTrade, onCancel, avgPrice }) {
-  const [mode, setMode] = useState('sell'); // sell, buy, expense, capital
-  const [amount, setAmount] = useState('');
-  const [rate, setRate] = useState('');
-  const [bankFee, setBankFee] = useState(false);
-  const [binanceFee, setBinanceFee] = useState(false);
+  const [mode, setMode] = useState('sell'); // sell, buy, swap, expense, capital
   const [exchange, setExchange] = useState('Binance');
-  const [currency, setCurrency] = useState('VES'); // Para modo capital
-
-  const valAmount = parseFloat(amount) || 0;
-  const valRate = parseFloat(rate) || 0;
   
-  // Costo Total BS
-  let totalBS = valAmount * valRate;
-  if (bankFee) totalBS = mode === 'buy' ? totalBS * 1.003 : totalBS * 0.997;
+  // Inputs Dinámicos
+  const [inputVal, setInputVal] = useState(''); // Puede ser USDT o VES dependiendo del modo
+  const [rate, setRate] = useState('');
+  
+  // Fees V2.4
+  const [bankFee, setBankFee] = useState(false); // Para compras (0.3%)
+  const [exchangeFeeType, setExchangeFeeType] = useState('none'); // none, std, merchant, airtm
+  
+  // Swap Inputs
+  const [swapFee, setSwapFee] = useState('');
 
-  // Costo Total USDT
-  let totalUSDT = valAmount;
-  if (binanceFee) totalUSDT = mode === 'buy' ? totalUSDT - 0.06 : totalUSDT + 0.06;
+  // Capital Inputs
+  const [capCurrency, setCapCurrency] = useState('VES');
 
-  // Ganancia Estimada
-  const estProfit = mode === 'sell' ? (totalBS - (valAmount * avgPrice)) / valRate : 0;
+  // Lógica de Cálculo Inverso
+  // Si es VENTA: El inputVal es BOLIVARES. Calculamos USDT.
+  // Si es COMPRA: El inputVal es USDT. Calculamos Bolívares.
+  
+  const valInput = parseFloat(inputVal) || 0;
+  const valRate = parseFloat(rate) || 0;
+
+  // Cálculos preliminares
+  let calcUSDT = 0;
+  let calcBS = 0;
+  let feeUSDT_Calculated = 0;
+  let feeBS_Calculated = 0;
+
+  if (mode === 'buy') {
+    // COMPRA: Input es USDT
+    calcUSDT = valInput;
+    calcBS = valInput * valRate;
+    if (bankFee) {
+        feeBS_Calculated = calcBS * 0.003;
+        calcBS += feeBS_Calculated; // Pagas más
+    }
+
+  } else if (mode === 'sell') {
+    // VENTA (V2.4): Input es VES (Lo que recibí en el banco)
+    calcBS = valInput; // Total recibido
+    // Cálculo inverso: ¿Cuántos USDT vendí para recibir esos Bs?
+    calcUSDT = valRate > 0 ? valInput / valRate : 0;
+    
+    // Calcular Fee Exchange (Se resta de mi inventario USDT)
+    if (exchangeFeeType === 'std') feeUSDT_Calculated = 0.06; // Binance Taker aprox
+    else if (exchangeFeeType === 'merchant') feeUSDT_Calculated = calcUSDT * 0.002; // 0.2%
+    else if (exchangeFeeType === 'airtm') feeUSDT_Calculated = calcUSDT * 0.0071; // 0.71% aprox
+  }
 
   const handleSubmit = () => {
     if (mode === 'expense') {
-      onTrade({ type: 'expense', amountBS: parseFloat(amount), description: rate });
+      onTrade({ type: 'expense', amountBS: valInput, description: rate });
+      return;
+    }
+    if (mode === 'swap') {
+      onTrade({ type: 'swap', amountUSDT: valInput, feeUSDT: parseFloat(swapFee) || 0, description: 'Swap / Transferencia' });
       return;
     }
     if (mode === 'capital') {
       onTrade({ 
         type: 'capital', 
-        amount: parseFloat(amount), 
-        currency, 
-        rate: currency === 'USDT' ? parseFloat(rate) : 0, // Rate solo importa para USDT (costo base)
+        amount: valInput, 
+        currency: capCurrency, 
+        rate: capCurrency === 'USDT' ? valRate : 0, 
         exchange: 'Fondeo'
       });
       return;
     }
+
+    // Trade Standard
     onTrade({
       type: mode,
-      amountUSDT: valAmount,
+      amountUSDT: calcUSDT, // Siempre mandamos el USDT calculado exacto
+      totalBS: calcBS,     // El total en Bs impactado en caja
       rate: valRate,
-      feeBS: bankFee ? (valAmount * valRate * 0.003) : 0,
-      feeUSDT: binanceFee ? 0.06 : 0,
-      exchange,
-      bank: bankFee ? 'Interbancario' : 'Directo'
+      feeBS: feeBS_Calculated,
+      feeUSDT: feeUSDT_Calculated,
+      exchange
     });
   };
 
   return (
     <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in slide-in-from-bottom-8">
-      {/* Tabs */}
-      <div className="flex bg-slate-950 p-1 rounded-lg mb-6 overflow-x-auto">
-        <button onClick={() => setMode('buy')} className={`flex-1 py-2 px-2 text-[10px] font-bold rounded-md transition-colors ${mode === 'buy' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>COMPRA</button>
-        <button onClick={() => setMode('sell')} className={`flex-1 py-2 px-2 text-[10px] font-bold rounded-md transition-colors ${mode === 'sell' ? 'bg-emerald-600 text-white' : 'text-slate-500'}`}>VENTA</button>
-        <button onClick={() => setMode('expense')} className={`flex-1 py-2 px-2 text-[10px] font-bold rounded-md transition-colors ${mode === 'expense' ? 'bg-red-600 text-white' : 'text-slate-500'}`}>GASTO</button>
-        <button onClick={() => setMode('capital')} className={`flex-1 py-2 px-2 text-[10px] font-bold rounded-md transition-colors ${mode === 'capital' ? 'bg-purple-600 text-white' : 'text-slate-500'}`}>FONDEAR</button>
+      
+      {/* Selector de Modo */}
+      <div className="flex bg-slate-950 p-1 rounded-lg mb-6 overflow-x-auto no-scrollbar">
+        {['buy', 'sell', 'swap', 'expense', 'capital'].map(m => (
+          <button 
+            key={m}
+            onClick={() => setMode(m)} 
+            className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-md transition-colors whitespace-nowrap ${
+              mode === m 
+                ? (m === 'buy' ? 'bg-blue-600 text-white' : 
+                   m === 'sell' ? 'bg-emerald-600 text-white' : 
+                   m === 'swap' ? 'bg-orange-600 text-white' :
+                   m === 'capital' ? 'bg-purple-600 text-white' : 'bg-red-600 text-white')
+                : 'text-slate-500 hover:bg-slate-800'
+            }`}
+          >
+            {m === 'buy' ? 'Comprar' : m === 'sell' ? 'Vender' : m === 'swap' ? 'Swap' : m === 'capital' ? 'Fondeo' : 'Gasto'}
+          </button>
+        ))}
       </div>
 
-      {mode === 'capital' ? (
-        <div className="space-y-4 mb-6">
-          <div className="flex gap-2 mb-2">
-            <button onClick={() => setCurrency('VES')} className={`flex-1 py-2 rounded border text-xs font-bold ${currency === 'VES' ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'border-slate-700 text-slate-500'}`}>Bs (Liquidez)</button>
-            <button onClick={() => setCurrency('USDT')} className={`flex-1 py-2 rounded border text-xs font-bold ${currency === 'USDT' ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400' : 'border-slate-700 text-slate-500'}`}>USDT (Inventario)</button>
-          </div>
-
-          <div>
-            <label className="text-[10px] text-slate-400 uppercase">Monto a Ingresar ({currency})</label>
-            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-purple-500" placeholder="0.00"/>
-          </div>
-
-          {currency === 'USDT' && (
-             <div>
-               <label className="text-[10px] text-slate-400 uppercase">Costo Base / Promedio (Bs/USDT)</label>
-               <input type="number" value={rate} onChange={e => setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-purple-500" placeholder="Ej: 45.50 (Opcional, para cuidar promedio)"/>
-               <p className="text-[10px] text-slate-500 mt-1">* Si dejas esto en 0, bajará tu precio promedio.</p>
-             </div>
+      {/* Formulario Dinámico */}
+      <div className="space-y-4">
+        
+        {/* INPUT PRINCIPAL */}
+        <div>
+          <label className="text-[10px] text-slate-400 uppercase font-bold">
+            {mode === 'buy' ? 'Cantidad a Comprar (USDT)' :
+             mode === 'sell' ? 'Total Bs Recibidos' :
+             mode === 'swap' ? 'Monto a Mover (USDT)' :
+             mode === 'expense' ? 'Monto Gasto (Bs)' :
+             `Monto a Ingresar (${capCurrency})`}
+          </label>
+          <input 
+            type="number" 
+            step="0.00000001"
+            value={inputVal} 
+            onChange={e => setInputVal(e.target.value)} 
+            className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 font-mono text-lg" 
+            placeholder="0.00"
+          />
+          {/* Subtítulo informativo */}
+          {mode === 'sell' && valRate > 0 && valInput > 0 && (
+            <p className="text-[10px] text-emerald-400 mt-1 text-right">
+              Equivale a: <span className="font-mono font-bold">{(valInput / valRate).toFixed(6)} USDT</span>
+            </p>
           )}
         </div>
-      ) : mode !== 'expense' ? (
-        <>
-          <div className="grid grid-cols-2 gap-4 mb-4">
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase">USDT</label>
-              <input type="number" value={amount} onChange={e => setAmount(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500" placeholder="0.00"/>
-            </div>
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase">Tasa</label>
-              <input type="number" value={rate} onChange={e => setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500" placeholder="0.00"/>
-            </div>
-          </div>
 
-          <div className="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
-            <Chip active={exchange === 'Binance'} onClick={() => setExchange('Binance')}>Binance</Chip>
-            <Chip active={exchange === 'BingX'} onClick={() => setExchange('BingX')}>BingX</Chip>
-            <Chip active={exchange === 'Bitget'} onClick={() => setExchange('Bitget')}>Bitget</Chip>
-            <Chip active={exchange === 'OKX'} onClick={() => setExchange('OKX')}>OKX</Chip>
-            <Chip active={exchange === 'CoinEx'} onClick={() => setExchange('CoinEx')}>CoinEx</Chip>
-            <Chip active={exchange === 'Telegram'} onClick={() => setExchange('Telegram')}>Telegram</Chip>
+        {/* CAMPO TASA / FEE */}
+        {mode !== 'expense' && mode !== 'swap' && (
+          <div>
+            {mode === 'capital' && capCurrency === 'VES' ? null : (
+              <>
+                <label className="text-[10px] text-slate-400 uppercase font-bold">
+                   {mode === 'capital' ? 'Costo Base (Opcional)' : 'Tasa de Cambio'}
+                </label>
+                <input 
+                  type="number" 
+                  step="0.000001"
+                  value={rate} 
+                  onChange={e => setRate(e.target.value)} 
+                  className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500" 
+                  placeholder="0.00"
+                />
+              </>
+            )}
           </div>
+        )}
 
-          <div className="flex gap-4 mb-6">
-            <label className="flex items-center gap-2 text-xs text-slate-300">
-              <input type="checkbox" checked={bankFee} onChange={e => setBankFee(e.target.checked)} className="accent-blue-500"/>
-              Comisión Banco (0.3%)
-            </label>
-            <label className="flex items-center gap-2 text-xs text-slate-300">
-              <input type="checkbox" checked={binanceFee} onChange={e => setBinanceFee(e.target.checked)} className="accent-yellow-500"/>
-              Fee Binance (0.06)
-            </label>
+        {/* EXTRAS SEGÚN MODO */}
+        
+        {/* SWAP EXTRAS */}
+        {mode === 'swap' && (
+           <div>
+             <label className="text-[10px] text-slate-400 uppercase font-bold">Comisión Pagada (USDT)</label>
+             <input type="number" value={swapFee} onChange={e => setSwapFee(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-orange-500" placeholder="Ej: 1.00"/>
+             <p className="text-[10px] text-slate-500 mt-1">Este monto se restará de tu inventario como gasto operativo.</p>
+           </div>
+        )}
+
+        {/* CAPITAL EXTRAS */}
+        {mode === 'capital' && (
+          <div className="flex gap-2">
+            <button onClick={() => setCapCurrency('VES')} className={`flex-1 py-2 text-xs border rounded ${capCurrency === 'VES' ? 'border-blue-500 text-blue-400 bg-blue-500/10' : 'border-slate-700 text-slate-500'}`}>Bolívares</button>
+            <button onClick={() => setCapCurrency('USDT')} className={`flex-1 py-2 text-xs border rounded ${capCurrency === 'USDT' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : 'border-slate-700 text-slate-500'}`}>USDT</button>
           </div>
+        )}
 
-          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 mb-6">
-             <div className="flex justify-between text-xs mb-1">
-               <span className="text-slate-400">{mode === 'buy' ? 'Pagarás:' : 'Recibirás:'}</span>
-               <span className="text-white font-mono">{totalBS.toLocaleString()} Bs</span>
+        {/* FEES PARA TRADE */}
+        {(mode === 'buy' || mode === 'sell') && (
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
+             
+             <div className="flex gap-2 mb-4 overflow-x-auto no-scrollbar">
+                {['Binance', 'BingX', 'Bitget', 'OKX', 'CoinEx', 'Telegram'].map(ex => (
+                  <button key={ex} onClick={() => setExchange(ex)} className={`px-2 py-1 rounded border text-[10px] ${exchange === ex ? 'bg-indigo-600 border-indigo-500 text-white' : 'border-slate-700 text-slate-500'}`}>{ex}</button>
+                ))}
              </div>
+
+             {mode === 'buy' && (
+               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                 <input type="checkbox" checked={bankFee} onChange={e => setBankFee(e.target.checked)} className="accent-blue-500"/>
+                 Comisión Bancaria (0.3%)
+               </label>
+             )}
+
              {mode === 'sell' && (
-                <div className="flex justify-between text-xs pt-2 border-t border-slate-800">
-                  <span className="text-slate-400">Ganancia Estimada:</span>
-                  <span className={`font-bold ${estProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {estProfit >= 0 ? '+' : ''}{estProfit.toFixed(2)} USDT
-                  </span>
-                </div>
+               <div className="flex flex-col gap-2">
+                 <span className="text-[10px] text-slate-400 uppercase">Comisión Exchange</span>
+                 <select 
+                   value={exchangeFeeType} 
+                   onChange={(e) => setExchangeFeeType(e.target.value)}
+                   className="bg-slate-900 text-white text-xs p-2 rounded border border-slate-700 outline-none"
+                 >
+                   <option value="none">Sin Comisión (0)</option>
+                   <option value="std">Standard (0.06 USDT)</option>
+                   <option value="merchant">Merchant (0.2%)</option>
+                   <option value="airtm">AirTM (0.71%)</option>
+                 </select>
+               </div>
              )}
           </div>
-        </>
-      ) : (
-        <div className="space-y-4 mb-6">
-          <div>
-              <label className="text-[10px] text-slate-400 uppercase">Monto en Bs</label>
-              <input type="number" value={amount} onChange={e => setAmount(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700" placeholder="0.00"/>
-          </div>
-          <div>
-              <label className="text-[10px] text-slate-400 uppercase">Concepto</label>
-              <input type="text" value={rate} onChange={e => setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700" placeholder="Ej: Comida, Transporte..."/>
-          </div>
-        </div>
-      )}
+        )}
 
-      <div className="flex gap-3">
-        <button onClick={onCancel} className="flex-1 py-3 bg-slate-800 rounded-lg text-slate-400 text-sm font-bold">Cancelar</button>
-        <button onClick={handleSubmit} className={`flex-1 py-3 rounded-lg text-slate-900 font-bold text-sm ${mode === 'buy' ? 'bg-blue-500' : mode === 'sell' ? 'bg-emerald-500' : mode === 'capital' ? 'bg-purple-600' : 'bg-red-500'}`}>
+      </div>
+
+      {/* BOTONES ACCIÓN */}
+      <div className="flex gap-3 mt-6">
+        <button onClick={onCancel} className="flex-1 py-3 bg-slate-800 rounded-lg text-slate-400 text-sm font-bold hover:bg-slate-700">Cancelar</button>
+        <button onClick={handleSubmit} className={`flex-1 py-3 rounded-lg text-white font-bold text-sm shadow-lg ${
+          mode === 'buy' ? 'bg-blue-600 hover:bg-blue-500' : 
+          mode === 'sell' ? 'bg-emerald-600 hover:bg-emerald-500' : 
+          mode === 'swap' ? 'bg-orange-600 hover:bg-orange-500' :
+          mode === 'capital' ? 'bg-purple-600 hover:bg-purple-500' : 
+          'bg-red-600 hover:bg-red-500'
+        }`}>
           CONFIRMAR
         </button>
       </div>
@@ -520,9 +672,7 @@ function LoansModule({ loans, user, db, appId }) {
   };
 
   const settleLoan = async (id) => {
-    if(confirm("¿Marcar como pagado?")) {
-        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', id));
-    }
+    if(confirm("¿Marcar como pagado?")) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', id));
   };
 
   return (
@@ -535,23 +685,19 @@ function LoansModule({ loans, user, db, appId }) {
         </div>
         <div className="flex justify-between items-center">
           <select value={currency} onChange={e=>setCurrency(e.target.value)} className="bg-slate-950 text-white text-xs p-2 rounded border border-slate-700">
-            <option value="USD">USD (Fijo)</option>
-            <option value="VES">VES (Bs)</option>
+            <option value="USD">USD</option>
+            <option value="VES">VES</option>
           </select>
           <button onClick={addLoan} className="bg-indigo-600 px-4 py-2 rounded text-xs font-bold text-white">Prestar</button>
         </div>
       </div>
-
       <div className="space-y-2">
         {loans.map(loan => (
           <div key={loan.id} className="flex justify-between items-center bg-slate-900/50 p-3 rounded-lg border border-slate-800">
-            <div>
-              <p className="text-sm font-bold text-white">{loan.debtor}</p>
-              <p className="text-xs text-slate-500">{new Date(loan.createdAt?.seconds * 1000).toLocaleDateString()}</p>
-            </div>
+            <div><p className="text-sm font-bold text-white">{loan.debtor}</p></div>
             <div className="flex items-center gap-3">
               <span className="font-mono text-indigo-400">{loan.amount} {loan.currency}</span>
-              <button onClick={() => settleLoan(loan.id)} className="text-emerald-500 text-xs border border-emerald-500/30 px-2 py-1 rounded hover:bg-emerald-500/10">Cobrar</button>
+              <button onClick={() => settleLoan(loan.id)} className="text-emerald-500 text-xs border border-emerald-500/30 px-2 py-1 rounded">Cobrar</button>
             </div>
           </div>
         ))}
@@ -564,7 +710,6 @@ function ArbitrageCalc() {
   const [buy, setBuy] = useState('');
   const [sell, setSell] = useState('');
   const [amount, setAmount] = useState('100');
-  
   const gap = parseFloat(sell) - parseFloat(buy);
   const profit = (gap * parseFloat(amount)) / parseFloat(sell);
   const percent = parseFloat(buy) > 0 ? ((parseFloat(sell) - parseFloat(buy)) / parseFloat(buy)) * 100 : 0;
@@ -573,28 +718,12 @@ function ArbitrageCalc() {
     <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800">
       <h3 className="text-lg font-bold text-white mb-4 flex gap-2"><Calculator/> Calculadora Rápida</h3>
       <div className="grid grid-cols-2 gap-4 mb-4">
-        <div>
-           <label className="text-xs text-blue-400">Precio Compra</label>
-           <input type="number" value={buy} onChange={e=>setBuy(e.target.value)} className="w-full bg-slate-950 p-3 rounded text-white border border-slate-700"/>
-        </div>
-        <div>
-           <label className="text-xs text-emerald-400">Precio Venta</label>
-           <input type="number" value={sell} onChange={e=>setSell(e.target.value)} className="w-full bg-slate-950 p-3 rounded text-white border border-slate-700"/>
-        </div>
+        <div><label className="text-xs text-blue-400">Compra</label><input type="number" value={buy} onChange={e=>setBuy(e.target.value)} className="w-full bg-slate-950 p-3 rounded text-white border border-slate-700"/></div>
+        <div><label className="text-xs text-emerald-400">Venta</label><input type="number" value={sell} onChange={e=>setSell(e.target.value)} className="w-full bg-slate-950 p-3 rounded text-white border border-slate-700"/></div>
       </div>
-      <div className="mb-6">
-        <label className="text-xs text-slate-400">Capital (USDT)</label>
-        <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} className="w-full bg-slate-950 p-3 rounded text-white border border-slate-700"/>
-      </div>
-      
       <div className="bg-slate-950 p-4 rounded-xl text-center">
-        <p className="text-xs text-slate-500 mb-1">Rentabilidad Estimada</p>
-        <h2 className={`text-3xl font-bold ${percent > 1 ? 'text-emerald-400' : percent > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
-          {percent.toFixed(2)}%
-        </h2>
-        <p className="text-sm text-slate-300 mt-1">
-          + {profit.toFixed(2)} USDT
-        </p>
+        <h2 className={`text-3xl font-bold ${percent > 1 ? 'text-emerald-400' : 'text-yellow-400'}`}>{percent.toFixed(2)}%</h2>
+        <p className="text-sm text-slate-300 mt-1">+ {profit.toFixed(2)} USDT</p>
       </div>
     </div>
   );
@@ -605,14 +734,6 @@ function NavButton({ icon, label, active, onClick }) {
     <button onClick={onClick} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${active ? 'text-emerald-400 bg-emerald-400/10' : 'text-slate-500'}`}>
       {React.cloneElement(icon, { size: 20 })}
       <span className="text-[10px] font-medium">{label}</span>
-    </button>
-  );
-}
-
-function Chip({ children, active, onClick }) {
-  return (
-    <button onClick={onClick} className={`px-3 py-1 rounded-full text-[10px] font-bold whitespace-nowrap border transition-all ${active ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-700 text-slate-400'}`}>
-      {children}
     </button>
   );
 }
