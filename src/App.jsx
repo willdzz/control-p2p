@@ -18,9 +18,7 @@ import {
   deleteDoc, 
   doc, 
   setDoc,
-  where,
-  Timestamp,
-  getDocs // Importación clave para el borrado profundo
+  getDocs
 } from 'firebase/firestore';
 import { 
   ArrowRightLeft, 
@@ -41,7 +39,6 @@ import {
   Edit2,
   Calendar,
   PieChart,
-  ShoppingBag,
   Utensils,
   Zap,
   Shirt,
@@ -55,7 +52,7 @@ import {
   Info
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE ---
+// --- CONFIGURACIÓN DE FIREBASE (MANUAL PARA ESTABILIDAD) ---
 const firebaseConfig = {
   apiKey: "AIzaSyCaa72nfDTjHn-VDRe2-IqjnlbXAqJkEu4",
   authDomain: "miwallet-p2p.firebaseapp.com",
@@ -70,21 +67,6 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
-// --- UTILIDAD DE SEGURIDAD ---
-const safeNum = (val) => {
-  const num = parseFloat(val);
-  return isNaN(num) ? 0 : num;
-};
-
-const safeDate = (timestamp) => {
-  if (!timestamp || !timestamp.seconds) return 'Pendiente';
-  try {
-    return new Date(timestamp.seconds * 1000).toLocaleDateString();
-  } catch (e) {
-    return 'Fecha Inválida';
-  }
-};
-
 // --- COMPONENTE PRINCIPAL ---
 export default function App() {
   const [user, setUser] = useState(null);
@@ -94,12 +76,13 @@ export default function App() {
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  const [safeMode, setSafeMode] = useState(true);
+  // Estados para edición manual (V3.0 Feature)
   const [editingInventory, setEditingInventory] = useState(false);
   const [tempInv, setTempInv] = useState({ usdt: '', ves: '', avgPrice: '' });
 
   const appId = 'p2p-v2-production';
 
+  // Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -108,138 +91,152 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Data Fetching
   useEffect(() => {
     if (!user) return;
     
+    // Timeout de seguridad visual
     const safetyTimeout = setTimeout(() => setLoading(false), 5000);
 
-    try {
-        const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
-        const unsubTx = onSnapshot(qTx, (snap) => {
-          setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-        }, (err) => console.error("Tx Err", err));
+    const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
+    const unsubTx = onSnapshot(qTx, (snap) => {
+      setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (error) => console.error("Error Tx:", error));
 
-        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
-        const unsubInv = onSnapshot(docRef, (snap) => {
-          if (snap.exists()) {
-            const data = snap.data();
-            setInventory({
-              usdt: safeNum(data.usdt),
-              ves: safeNum(data.ves),
-              avgPrice: safeNum(data.avgPrice)
-            });
-          } else {
-            setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
-          }
-          setLoading(false);
-          clearTimeout(safetyTimeout);
-        }, (err) => {
-            console.error("Inv Err", err);
-            setLoading(false);
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
+    const unsubInv = onSnapshot(docRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setInventory({
+          usdt: parseFloat(data.usdt) || 0,
+          ves: parseFloat(data.ves) || 0,
+          avgPrice: parseFloat(data.avgPrice) || 0
         });
+      } else {
+        setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
+      }
+      setLoading(false);
+      clearTimeout(safetyTimeout);
+    }, (error) => console.error("Error Inv:", error));
 
-        const qLoans = query(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), orderBy('createdAt', 'desc'));
-        const unsubLoans = onSnapshot(qLoans, (snap) => {
-          setLoans(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-        }, (err) => console.error("Loans Err", err));
+    const qLoans = query(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), orderBy('createdAt', 'desc'));
+    const unsubLoans = onSnapshot(qLoans, (snap) => {
+      setLoans(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
 
-        return () => { unsubTx(); unsubInv(); unsubLoans(); clearTimeout(safetyTimeout); };
-    } catch (e) {
-        console.error("Hook Err", e);
-        setLoading(false);
-    }
+    return () => { unsubTx(); unsubInv(); unsubLoans(); clearTimeout(safetyTimeout); };
   }, [user]);
 
   // --- LÓGICA DE NEGOCIO ---
+
   const handleTrade = async (data) => {
     let newInv = { ...inventory };
-    newInv.usdt = safeNum(newInv.usdt);
-    newInv.ves = safeNum(newInv.ves);
-    newInv.avgPrice = safeNum(newInv.avgPrice);
+    // Asegurar números
+    newInv.usdt = parseFloat(newInv.usdt) || 0;
+    newInv.ves = parseFloat(newInv.ves) || 0;
+    newInv.avgPrice = parseFloat(newInv.avgPrice) || 0;
+
+    let profit = 0;
 
     if (data.type === 'buy') {
       const totalCostOld = newInv.usdt * newInv.avgPrice;
-      const costNew = safeNum(data.totalBS); 
-      const totalUSDT = newInv.usdt + safeNum(data.amountUSDT); 
+      const costNew = data.totalBS; 
+      const totalUSDT = newInv.usdt + data.amountUSDT; 
       const totalCost = totalCostOld + costNew;
+      
       newInv.avgPrice = totalUSDT > 0 ? totalCost / totalUSDT : 0;
       newInv.usdt = totalUSDT;
       newInv.ves -= costNew;
+
     } else if (data.type === 'sell') {
-      const revenueVES = safeNum(data.totalBS); 
-      newInv.usdt -= (safeNum(data.amountUSDT) + safeNum(data.feeUSDT));
+      const revenueVES = data.totalBS; 
+      
+      // Calcular Profit para registro (metadata)
+      const costOfSold = data.amountUSDT * newInv.avgPrice;
+      profit = revenueVES - costOfSold;
+      data.profitUSDT = data.rate > 0 ? profit / data.rate : 0;
+      data.avgPriceAtMoment = newInv.avgPrice; // Guardamos el costo base histórico
+
+      // Afectar inventario
+      newInv.usdt -= (data.amountUSDT + (data.feeUSDT || 0));
       newInv.ves += revenueVES;
+    
     } else if (data.type === 'swap') {
-      const fee = safeNum(data.feeUSDT);
+      const fee = data.feeUSDT || 0;
       const totalCost = newInv.usdt * newInv.avgPrice;
       const newTotalUSDT = newInv.usdt - fee;
+
       newInv.usdt = newTotalUSDT;
       newInv.avgPrice = newTotalUSDT > 0 ? totalCost / newTotalUSDT : 0;
+
     } else if (data.type === 'expense') {
-      newInv.ves -= safeNum(data.amountBS);
+      newInv.ves -= data.amountBS;
+
     } else if (data.type === 'capital') {
-      if (data.currency === 'VES') newInv.ves += safeNum(data.amount);
-      else if (data.currency === 'USDT') {
+      if (data.currency === 'VES') {
+        newInv.ves += data.amount;
+      } else if (data.currency === 'USDT') {
         const totalCostOld = newInv.usdt * newInv.avgPrice;
-        const costNew = safeNum(data.amount) * safeNum(data.rate); 
-        const totalUSDT = newInv.usdt + safeNum(data.amount);
+        const costNew = data.amount * (data.rate || 0); 
+        const totalUSDT = newInv.usdt + data.amount;
         const totalCost = totalCostOld + costNew;
+        
         newInv.avgPrice = totalUSDT > 0 ? totalCost / totalUSDT : 0;
         newInv.usdt = totalUSDT;
       }
     }
 
-    if (data.type === 'sell') {
-        const costOfSold = safeNum(data.amountUSDT) * inventory.avgPrice;
-        const profitBS = safeNum(data.totalBS) - costOfSold;
-        data.profitUSDT = safeNum(data.rate) > 0 ? profitBS / safeNum(data.rate) : 0;
-    }
-
     await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), {
       ...data,
-      avgPriceAtMoment: inventory.avgPrice,
       createdAt: serverTimestamp()
     });
+
     const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
     await setDoc(invRef, newInv);
+    
     setView('dashboard');
   };
 
   const handleDeleteTransaction = async (tx) => {
-    if(!confirm("¿Borrar y revertir?")) return;
+    if(!confirm("¿Borrar esta transacción y revertir los saldos?")) return;
     
     let newInv = { ...inventory };
-    newInv.usdt = safeNum(newInv.usdt);
-    newInv.ves = safeNum(newInv.ves);
-    newInv.avgPrice = safeNum(newInv.avgPrice);
+    newInv.usdt = parseFloat(newInv.usdt) || 0;
+    newInv.ves = parseFloat(newInv.ves) || 0;
+    newInv.avgPrice = parseFloat(newInv.avgPrice) || 0;
 
     if (tx.type === 'buy') {
-      const totalCost = safeNum(tx.totalBS) || (safeNum(tx.amountUSDT) * safeNum(tx.rate));
+      const totalCost = tx.totalBS || (tx.amountUSDT * tx.rate);
       const currentTotalVal = newInv.usdt * newInv.avgPrice;
       const prevTotalVal = currentTotalVal - totalCost;
-      const prevUSDT = newInv.usdt - safeNum(tx.amountUSDT);
+      const prevUSDT = newInv.usdt - tx.amountUSDT;
+
       newInv.usdt = prevUSDT;
       newInv.ves += totalCost;
       newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
+
     } else if (tx.type === 'sell') {
-      const totalUSDTBack = safeNum(tx.amountUSDT) + safeNum(tx.feeUSDT);
+      const totalUSDTBack = tx.amountUSDT + (tx.feeUSDT || 0);
       newInv.usdt += totalUSDTBack;
-      newInv.ves -= (safeNum(tx.totalBS) || (safeNum(tx.amountUSDT) * safeNum(tx.rate)));
+      newInv.ves -= (tx.totalBS || (tx.amountUSDT * tx.rate));
+
     } else if (tx.type === 'swap') {
-      const fee = safeNum(tx.feeUSDT);
+      const fee = tx.feeUSDT || 0;
       const currentTotalVal = newInv.usdt * newInv.avgPrice;
       const prevUSDT = newInv.usdt + fee;
       newInv.usdt = prevUSDT;
       newInv.avgPrice = prevUSDT > 0 ? currentTotalVal / prevUSDT : 0;
+
     } else if (tx.type === 'expense') {
-      newInv.ves += safeNum(tx.amountBS);
+      newInv.ves += (tx.amountBS || 0);
+
     } else if (tx.type === 'capital') {
-       if (tx.currency === 'VES') newInv.ves -= safeNum(tx.amount);
+       if (tx.currency === 'VES') newInv.ves -= (tx.amount || 0);
        else if (tx.currency === 'USDT') {
-         const costWas = safeNum(tx.amount) * safeNum(tx.rate);
+         const costWas = (tx.amount || 0) * (tx.rate || 0);
          const currentTotalVal = newInv.usdt * newInv.avgPrice;
          const prevTotalVal = currentTotalVal - costWas;
-         const prevUSDT = newInv.usdt - safeNum(tx.amount);
+         const prevUSDT = newInv.usdt - (tx.amount || 0);
          newInv.usdt = prevUSDT;
          newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
        }
@@ -250,44 +247,46 @@ export default function App() {
     await setDoc(invRef, newInv);
   };
 
-  // --- V3.6: LOGICA DE RESETEO PROFUNDO (Direct Fetch) ---
+  // Función de Reset (V3.0 - Mejorada para borrar profundo si es necesario)
   const handleResetApp = async () => {
-    if (!confirm("⚠️ MODO DEEP CLEAN: Se buscarán y eliminarán todos los datos directamente del servidor. ¿Continuar?")) return;
+    if (!confirm("⚠️ PELIGRO: ¿Borrar TODA la base de datos y reiniciar en CERO?")) return;
+
     setLoading(true);
     try {
         // 1. Resetear Inventario
         const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
         await setDoc(invRef, { usdt: 0, ves: 0, avgPrice: 0 });
 
-        // 2. Buscar y Borrar Transacciones (Fetch directo)
+        // 2. Buscar y Borrar Transacciones (Fetch directo para limpieza profunda)
         const txCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'transactions');
         const txSnapshot = await getDocs(txCollection);
         const txDeletePromises = txSnapshot.docs.map(doc => deleteDoc(doc.ref));
 
-        // 3. Buscar y Borrar Préstamos (Fetch directo)
+        // 3. Buscar y Borrar Préstamos
         const loansCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'loans');
         const loansSnapshot = await getDocs(loansCollection);
         const loansDeletePromises = loansSnapshot.docs.map(doc => deleteDoc(doc.ref));
 
         await Promise.all([...txDeletePromises, ...loansDeletePromises]);
         
-        // Reset local states
         setTransactions([]);
         setLoans([]);
         setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
-        
-        alert(`LIMPIEZA COMPLETADA.\n\nSe eliminaron:\n- ${txSnapshot.size} transacciones\n- ${loansSnapshot.size} préstamos\n\nAhora es seguro desactivar el Modo Seguro.`);
+        setEditingInventory(false);
+        setLoading(false);
+        alert("Aplicación restablecida de fábrica correctamente.");
     } catch (e) {
-        alert("Error crítico al limpiar: " + e.message);
+        console.error(e);
+        alert("Hubo un error al limpiar. Intenta de nuevo.");
+        setLoading(false);
     }
-    setLoading(false);
   };
 
   const saveInventoryManual = async () => {
     const newInv = {
-      usdt: safeNum(tempInv.usdt),
-      ves: safeNum(tempInv.ves),
-      avgPrice: safeNum(tempInv.avgPrice)
+      usdt: parseFloat(tempInv.usdt) || 0,
+      ves: parseFloat(tempInv.ves) || 0,
+      avgPrice: parseFloat(tempInv.avgPrice) || 0
     };
     setInventory(newInv);
     const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
@@ -305,13 +304,12 @@ export default function App() {
   };
 
   const handleUpdateAvg = async (newVal) => {
-    const price = safeNum(newVal);
+    const price = parseFloat(newVal);
     if(price > 0) {
       const newInv = { ...inventory, avgPrice: price };
       setInventory(newInv);
       const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
       await setDoc(invRef, newInv);
-      setEditingAvg(false);
     }
   };
 
@@ -322,7 +320,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.6 - Deep Clean</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.0 - Estable</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -343,13 +341,10 @@ export default function App() {
       <div className="bg-gradient-to-b from-slate-900 to-slate-950 p-6 border-b border-slate-800">
         <div className="flex justify-between items-center mb-4">
           <div>
-            <h2 className="text-xs text-slate-400 font-semibold tracking-wider uppercase flex items-center gap-2">
-               Patrimonio Neto
-               {safeMode && <span className="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full animate-pulse">MODO SEGURO</span>}
-            </h2>
+            <h2 className="text-xs text-slate-400 font-semibold tracking-wider uppercase">Patrimonio Neto</h2>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-bold text-white">
-                $ {(safeNum(inventory.usdt) + (safeNum(inventory.ves) / (safeNum(inventory.avgPrice) || 1))).toFixed(2)}
+                $ {((inventory.usdt || 0) + ((inventory.ves || 0) / (inventory.avgPrice || 1))).toFixed(2)}
               </span>
               <span className="text-xs text-slate-500">USDT (Est.)</span>
             </div>
@@ -364,28 +359,6 @@ export default function App() {
              <button onClick={() => signOut(auth)} className="bg-slate-800 p-2 rounded-lg text-slate-400 hover:text-white"><LogOut size={16}/></button>
           </div>
         </div>
-
-        {/* PANEL DE MODO SEGURO */}
-        {safeMode && (
-            <div className="bg-red-500/10 border border-red-500/50 p-4 rounded-xl mb-4">
-                <div className="flex items-start gap-3">
-                    <AlertTriangle className="text-red-500 shrink-0" size={24}/>
-                    <div>
-                        <h3 className="text-sm font-bold text-white mb-1">Modo Recuperación</h3>
-                        <p className="text-xs text-slate-300 mb-3">
-                            Si la app fallaba, usa este botón para limpiar todos los datos directamente del servidor.
-                        </p>
-                        <button onClick={handleResetApp} className="bg-red-600 text-white px-4 py-3 rounded-lg text-xs font-bold w-full hover:bg-red-500 mb-3 shadow-lg shadow-red-900/20">
-                            BORRAR TODO Y REINICIAR (DEEP CLEAN)
-                        </button>
-                        <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer p-2 border border-slate-700 rounded hover:bg-slate-800">
-                            <input type="checkbox" checked={!safeMode} onChange={() => setSafeMode(false)} className="accent-blue-500"/>
-                            Desactivar Modo Seguro
-                        </label>
-                    </div>
-                </div>
-            </div>
-        )}
 
         {/* MODO EDICIÓN MANUAL */}
         {editingInventory ? (
@@ -412,10 +385,13 @@ export default function App() {
               <button onClick={saveInventoryManual} className="w-full bg-blue-600 py-2 rounded-lg text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-500">
                 <Save size={14}/> Guardar Cambios
               </button>
+              
+              <button onClick={handleResetApp} className="w-full bg-red-500/10 border border-red-500/50 py-2 rounded-lg text-red-400 font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-500 hover:text-white transition-colors">
+                <AlertTriangle size={14}/> Restablecer Fábrica (Borrar Todo)
+              </button>
             </div>
           </div>
         ) : (
-          !safeMode && (
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
               <div className="flex items-center gap-2 mb-1 justify-between">
@@ -423,22 +399,10 @@ export default function App() {
                   <Wallet size={14} className="text-emerald-400"/>
                   <span className="text-xs text-slate-400">Inventario USDT</span>
                 </div>
-                <button onClick={() => setEditingAvg(!editingAvg)} className="text-xs text-slate-600 hover:text-white"><Edit2 size={12}/></button>
+                {/* Visualizador de Precio Promedio Rapido */}
+                <span className="text-[10px] text-emerald-400 bg-emerald-400/10 px-1 rounded">Avg: {(inventory.avgPrice || 0).toFixed(2)}</span>
               </div>
-              <p className="text-lg font-mono font-bold text-white">{safeNum(inventory.usdt).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
-              
-              {editingAvg ? (
-                 <input 
-                   autoFocus
-                   type="number" 
-                   className="w-full bg-slate-950 text-xs p-1 rounded border border-slate-600 text-white"
-                   defaultValue={inventory.avgPrice}
-                   onBlur={(e) => handleUpdateAvg(e.target.value)}
-                   onKeyDown={(e) => e.key === 'Enter' && handleUpdateAvg(e.currentTarget.value)}
-                 />
-              ) : (
-                 <p className="text-[10px] text-slate-500">Costo Prom: <span className="text-emerald-400">{safeNum(inventory.avgPrice).toFixed(4)}</span></p>
-              )}
+              <p className="text-lg font-mono font-bold text-white">{(inventory.usdt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
             </div>
             
             <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
@@ -446,84 +410,76 @@ export default function App() {
                 <Landmark size={14} className="text-blue-400"/>
                 <span className="text-xs text-slate-400">Liquidez VES</span>
               </div>
-              <p className="text-lg font-mono font-bold text-white">{safeNum(inventory.ves).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
+              <p className="text-lg font-mono font-bold text-white">{(inventory.ves || 0).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
             </div>
           </div>
-          )
         )}
       </div>
 
       {/* BODY */}
-      {!safeMode && (
-        <div className="p-4">
-            {view === 'dashboard' && <Dashboard transactions={transactions} onDelete={handleDeleteTransaction} />}
-            {view === 'trade' && <TradeForm onTrade={handleTrade} onCancel={() => setView('dashboard')} avgPrice={inventory.avgPrice} />}
-            {view === 'stats' && <StatsModule transactions={transactions} />}
-            {view === 'loans' && <LoansModule loans={loans} user={user} db={db} appId={appId} />}
-            {view === 'calculator' && <ArbitrageCalc />}
-        </div>
-      )}
+      <div className="p-4">
+        {view === 'dashboard' && <Dashboard transactions={transactions} onDelete={handleDeleteTransaction} />}
+        {view === 'trade' && <TradeForm onTrade={handleTrade} onCancel={() => setView('dashboard')} avgPrice={inventory.avgPrice} />}
+        {view === 'stats' && <StatsModule transactions={transactions} />}
+        {view === 'loans' && <LoansModule loans={loans} user={user} db={db} appId={appId} />}
+        {view === 'calculator' && <ArbitrageCalc />}
+      </div>
 
       {/* NAV */}
-      {!safeMode && (
-        <div className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur border-t border-slate-800 flex justify-around p-3 max-w-md mx-auto z-50">
-            <NavButton icon={<TrendingUp/>} label="Operar" active={view === 'trade'} onClick={() => setView('trade')} />
-            <NavButton icon={<History/>} label="Historial" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
-            <NavButton icon={<PieChart/>} label="Stats" active={view === 'stats'} onClick={() => setView('stats')} />
-            <NavButton icon={<Users/>} label="Deudas" active={view === 'loans'} onClick={() => setView('loans')} />
-            <NavButton icon={<Calculator/>} label="Calc" active={view === 'calculator'} onClick={() => setView('calculator')} />
-        </div>
-      )}
+      <div className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur border-t border-slate-800 flex justify-around p-3 max-w-md mx-auto z-50">
+        <NavButton icon={<TrendingUp/>} label="Operar" active={view === 'trade'} onClick={() => setView('trade')} />
+        <NavButton icon={<History/>} label="Historial" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
+        <NavButton icon={<PieChart/>} label="Stats" active={view === 'stats'} onClick={() => setView('stats')} />
+        <NavButton icon={<Users/>} label="Deudas" active={view === 'loans'} onClick={() => setView('loans')} />
+        <NavButton icon={<Calculator/>} label="Calc" active={view === 'calculator'} onClick={() => setView('calculator')} />
+      </div>
     </div>
   );
 }
 
-// --- MÓDULOS DE INTERFAZ BLINDADOS ---
+// --- SUB-COMPONENTES ---
 
 function Dashboard({ transactions, onDelete }) {
+  // FIX CRÍTICO: Manejar timestamps pendientes (null) como 'ahora' para que se muestren en tiempo real
   const todayStats = useMemo(() => {
     const startOfDay = new Date();
     startOfDay.setHours(0,0,0,0);
+    
     const todays = transactions.filter(t => {
-      // FIX V3.5: Verificación segura de fecha
-      if (!t.createdAt) return true; 
-      return (t.createdAt.seconds * 1000) > startOfDay.getTime();
+      // Si createdAt es null (acaba de crearse), usamos Date.now()
+      const txTime = t.createdAt ? t.createdAt.seconds * 1000 : Date.now();
+      return txTime > startOfDay.getTime();
     });
     
-    // Filtro adicional: Evitar transacciones fantasma o corruptas
-    const validTransactions = todays.filter(t => t && t.type);
-
-    const sold = validTransactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + safeNum(curr.totalBS), 0);
-    const profit = validTransactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + safeNum(curr.profitUSDT), 0);
-    const spent = validTransactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + safeNum(curr.amountBS), 0);
-    return { count: validTransactions.length, sold, profit, spent };
+    // Safety checks para evitar crash si el campo no existe
+    const sold = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.totalBS || 0), 0);
+    const profit = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
+    const spent = todays.filter(t => t.type === 'expense').reduce((acc, curr) => acc + (curr.amountBS || 0), 0);
+    return { count: todays.length, sold, profit, spent };
   }, [transactions]);
-
-  // Filtrado final para la lista visual
-  const safeTransactions = transactions.filter(tx => tx && tx.type);
 
   return (
     <div className="space-y-4 pb-20">
       <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex justify-between items-center">
         <div>
           <p className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1"><Calendar size={10}/> Resumen Hoy</p>
-          <p className="text-xs text-slate-500 mt-1">Ventas: <span className="text-white font-mono">{safeNum(todayStats.sold).toLocaleString()} Bs</span></p>
-          <p className="text-xs text-slate-500">Gastos: <span className="text-red-400 font-mono">{safeNum(todayStats.spent).toLocaleString()} Bs</span></p>
+          <p className="text-xs text-slate-500 mt-1">Ventas: <span className="text-white font-mono">{todayStats.sold.toLocaleString()} Bs</span></p>
+          <p className="text-xs text-slate-500">Gastos: <span className="text-red-400 font-mono">{todayStats.spent.toLocaleString()} Bs</span></p>
         </div>
         <div className="text-right">
            <p className="text-[10px] text-slate-400 uppercase font-bold">Profit Est.</p>
            <p className={`text-xl font-bold ${todayStats.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-             {todayStats.profit >= 0 ? '+' : ''}{safeNum(todayStats.profit).toFixed(2)}
+             {todayStats.profit >= 0 ? '+' : ''}{todayStats.profit.toFixed(2)}
            </p>
            <p className="text-[10px] text-slate-600">{todayStats.count} Ops.</p>
         </div>
       </div>
 
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Historial</h3>
-      {safeTransactions.length === 0 ? (
+      {transactions.length === 0 ? (
         <p className="text-slate-600 text-center py-10">Sin movimientos.</p>
       ) : (
-        safeTransactions.map(tx => (
+        transactions.map(tx => (
           <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
             <div className="flex items-center gap-3">
               <div className={`p-2 rounded-full ${
@@ -549,14 +505,15 @@ function Dashboard({ transactions, onDelete }) {
                 </p>
                 <div className="flex flex-col">
                   <p className="text-[10px] text-slate-500">
-                    {tx.type === 'swap' ? `Fee: ${safeNum(tx.feeUSDT)} USDT` :
+                    {tx.type === 'swap' ? `Fee: ${(tx.feeUSDT || 0)} USDT` :
                      tx.type === 'capital' ? `${tx.currency || 'N/A'}` :
                      tx.type === 'expense' ? (tx.description || 'Sin nota') :
-                     `@ ${safeNum(tx.rate)} • ${tx.exchange || '-'}`}
+                     `@ ${(tx.rate || 0)} • ${tx.exchange || '-'}`}
                   </p>
-                  {tx.type === 'sell' && (
+                  {/* Info extra de Profit */}
+                  {tx.type === 'sell' && tx.avgPriceAtMoment && (
                     <p className="text-[9px] text-slate-600 flex items-center gap-1">
-                      <Info size={8}/> Costo Base: {safeNum(tx.avgPriceAtMoment).toFixed(2)}
+                      <Info size={8}/> Base: {(tx.avgPriceAtMoment || 0).toFixed(2)}
                     </p>
                   )}
                 </div>
@@ -566,14 +523,14 @@ function Dashboard({ transactions, onDelete }) {
             <div className="flex items-center gap-3">
               <div className="text-right">
                 <p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-emerald-400' : 'text-slate-200'}`}>
-                  {tx.type === 'expense' ? `-Bs ${safeNum(tx.amountBS).toLocaleString()}` : 
-                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${safeNum(tx.amount).toLocaleString()}` : `+$${safeNum(tx.amount)}`) :
-                   tx.type === 'swap' ? `-$${safeNum(tx.feeUSDT)}` :
-                   `$${safeNum(tx.amountUSDT).toFixed(2)}`}
+                  {tx.type === 'expense' ? `-Bs ${(tx.amountBS || 0).toLocaleString()}` : 
+                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${(tx.amount || 0).toLocaleString()}` : `+$${(tx.amount || 0)}`) :
+                   tx.type === 'swap' ? `-$${(tx.feeUSDT || 0)}` :
+                   `$${(tx.amountUSDT || 0).toFixed(2)}`}
                 </p>
-                {(tx.type === 'sell') && (
-                  <p className={`text-[10px] ${safeNum(tx.profitUSDT) > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                    {safeNum(tx.profitUSDT).toFixed(2)} PnL
+                {tx.profitUSDT !== undefined && (
+                  <p className={`text-[10px] ${tx.profitUSDT > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                    {tx.profitUSDT.toFixed(2)} PnL
                   </p>
                 )}
               </div>
@@ -588,23 +545,20 @@ function Dashboard({ transactions, onDelete }) {
 
 function StatsModule({ transactions }) {
   const stats = useMemo(() => {
-    // Protección de filtro
-    const validTxs = transactions.filter(t => t && t.type);
-
-    const expenses = validTxs.filter(t => t.type === 'expense');
-    const totalSpent = expenses.reduce((acc, curr) => acc + safeNum(curr.amountBS), 0);
+    // Safety Checks
+    const expenses = transactions.filter(t => t.type === 'expense');
+    const totalSpent = expenses.reduce((acc, curr) => acc + (curr.amountBS || 0), 0);
 
     const byCategory = expenses.reduce((acc, curr) => {
       const cat = curr.category || 'Otros';
-      acc[cat] = (acc[cat] || 0) + safeNum(curr.amountBS);
+      acc[cat] = (acc[cat] || 0) + (curr.amountBS || 0);
       return acc;
     }, {});
 
-    const totalProfitUSDT = validTxs.filter(t => t.type === 'sell').reduce((acc, curr) => acc + safeNum(curr.profitUSDT), 0);
+    const totalProfitUSDT = transactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
     
-    // FIX V3.5: Safe rate
-    const sells = validTxs.filter(t => t.type === 'sell');
-    const avgSellRate = sells.length > 0 ? (sells.reduce((acc, t) => acc + safeNum(t.rate), 0) / sells.length) : 0;
+    const sells = transactions.filter(t => t.type === 'sell');
+    const avgSellRate = sells.length > 0 ? (sells.reduce((acc, t) => acc + (t.rate || 0), 0) / sells.length) : 0;
     const totalProfitBS = totalProfitUSDT * avgSellRate;
 
     return { totalSpent, byCategory, totalProfitBS, totalProfitUSDT };
@@ -627,21 +581,21 @@ function StatsModule({ transactions }) {
         <div className="flex items-end gap-2 mb-2 h-24">
            <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
              <span className="text-[10px] text-emerald-400 font-bold opacity-0 group-hover:opacity-100 transition-opacity">
-               ${safeNum(stats.totalProfitUSDT).toFixed(0)}
+               ${stats.totalProfitUSDT.toFixed(0)}
              </span>
              <div 
                className="w-full bg-emerald-500/20 border border-emerald-500/50 rounded-t-lg transition-all hover:bg-emerald-500/30"
-               style={{ height: `${Math.min(100, (safeNum(stats.totalProfitBS) / (safeNum(stats.totalProfitBS) + safeNum(stats.totalSpent) || 1)) * 100)}%` }}
+               style={{ height: `${Math.min(100, (stats.totalProfitBS / ((stats.totalProfitBS + stats.totalSpent) || 1)) * 100)}%` }}
              ></div>
              <p className="text-[10px] text-emerald-500 font-bold">GANADO</p>
            </div>
            <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
              <span className="text-[10px] text-red-400 font-bold opacity-0 group-hover:opacity-100 transition-opacity">
-               Bs {safeNum(stats.totalSpent).toLocaleString()}
+               Bs {stats.totalSpent.toLocaleString()}
              </span>
              <div 
                className="w-full bg-red-500/20 border border-red-500/50 rounded-t-lg transition-all hover:bg-red-500/30"
-               style={{ height: `${Math.min(100, (safeNum(stats.totalSpent) / (safeNum(stats.totalProfitBS) + safeNum(stats.totalSpent) || 1)) * 100)}%` }}
+               style={{ height: `${Math.min(100, (stats.totalSpent / ((stats.totalProfitBS + stats.totalSpent) || 1)) * 100)}%` }}
              ></div>
              <p className="text-[10px] text-red-500 font-bold">GASTADO</p>
            </div>
