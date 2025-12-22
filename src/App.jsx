@@ -50,8 +50,7 @@ import {
   Cross,
   Save,
   X,
-  AlertTriangle,
-  ShieldAlert
+  AlertTriangle
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -78,9 +77,6 @@ export default function App() {
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // V2.9: Modo Seguro activado por defecto para evitar crash de renderizado
-  const [safeMode, setSafeMode] = useState(true);
-  
   const [editingInventory, setEditingInventory] = useState(false);
   const [tempInv, setTempInv] = useState({ usdt: '', ves: '', avgPrice: '' });
 
@@ -96,9 +92,10 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+    
+    // Safety timeout
     const safetyTimeout = setTimeout(() => setLoading(false), 5000);
 
-    // En Modo Seguro, cargamos los datos igual, pero NO los renderizamos en listas peligrosas
     const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
     const unsubTx = onSnapshot(qTx, (snap) => {
       setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -186,13 +183,53 @@ export default function App() {
   };
 
   const handleDeleteTransaction = async (tx) => {
-    if(!confirm("¿Borrar transacción?")) return;
-    // Logica de reverso omitida en modo seguro para simplificar, el reset total es preferible
+    if(!confirm("¿Borrar transacción y revertir saldos?")) return;
+    
+    let newInv = { 
+      usdt: parseFloat(inventory.usdt) || 0,
+      ves: parseFloat(inventory.ves) || 0,
+      avgPrice: parseFloat(inventory.avgPrice) || 0
+    };
+
+    if (tx.type === 'buy') {
+      const totalCost = tx.totalBS || (tx.amountUSDT * tx.rate);
+      const currentTotalVal = newInv.usdt * newInv.avgPrice;
+      const prevTotalVal = currentTotalVal - totalCost;
+      const prevUSDT = newInv.usdt - tx.amountUSDT;
+      newInv.usdt = prevUSDT;
+      newInv.ves += totalCost;
+      newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
+    } else if (tx.type === 'sell') {
+      const totalUSDTBack = tx.amountUSDT + (tx.feeUSDT || 0);
+      newInv.usdt += totalUSDTBack;
+      newInv.ves -= (tx.totalBS || (tx.amountUSDT * tx.rate));
+    } else if (tx.type === 'swap') {
+      const fee = tx.feeUSDT || 0;
+      const currentTotalVal = newInv.usdt * newInv.avgPrice;
+      const prevUSDT = newInv.usdt + fee;
+      newInv.usdt = prevUSDT;
+      newInv.avgPrice = prevUSDT > 0 ? currentTotalVal / prevUSDT : 0;
+    } else if (tx.type === 'expense') {
+      newInv.ves += (tx.amountBS || 0);
+    } else if (tx.type === 'capital') {
+       if (tx.currency === 'VES') newInv.ves -= (tx.amount || 0);
+       else if (tx.currency === 'USDT') {
+         const costWas = (tx.amount || 0) * (tx.rate || 0);
+         const currentTotalVal = newInv.usdt * newInv.avgPrice;
+         const prevTotalVal = currentTotalVal - costWas;
+         const prevUSDT = newInv.usdt - (tx.amount || 0);
+         newInv.usdt = prevUSDT;
+         newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
+       }
+    }
+
     await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id));
+    const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
+    await setDoc(invRef, newInv);
   };
 
   const handleResetApp = async () => {
-    if (!confirm("⚠️ ACCIÓN DESTRUCTIVA: Se borrarán TODOS los datos para recuperar la aplicación. ¿Continuar?")) return;
+    if (!confirm("⚠️ ACCIÓN DESTRUCTIVA: Se borrarán TODOS los datos. ¿Continuar?")) return;
     setLoading(true);
     try {
         const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
@@ -209,9 +246,10 @@ export default function App() {
         setTransactions([]);
         setLoans([]);
         setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
-        alert("Sistema reiniciado correctamente.");
+        setEditingInventory(false);
+        alert("Sistema reiniciado.");
     } catch (e) {
-        alert("Error al reiniciar: " + e.message);
+        alert("Error: " + e.message);
     }
     setLoading(false);
   };
@@ -244,7 +282,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V2.9 - Modo Recuperación.</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.0 - Estable</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -265,14 +303,12 @@ export default function App() {
       <div className="bg-gradient-to-b from-slate-900 to-slate-950 p-6 border-b border-slate-800">
         <div className="flex justify-between items-center mb-4">
           <div>
-            <h2 className="text-xs text-slate-400 font-semibold tracking-wider uppercase flex items-center gap-2">
-                Patrimonio Neto
-                {safeMode && <span className="bg-red-500 text-white text-[10px] px-2 py-0.5 rounded-full animate-pulse">MODO SEGURO</span>}
-            </h2>
+            <h2 className="text-xs text-slate-400 font-semibold tracking-wider uppercase">Patrimonio Neto</h2>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-bold text-white">
                 $ {((inventory.usdt || 0) + ((inventory.ves || 0) / (inventory.avgPrice || 1))).toFixed(2)}
               </span>
+              <span className="text-xs text-slate-500">USDT (Est.)</span>
             </div>
           </div>
           <div className="flex gap-2">
@@ -287,7 +323,7 @@ export default function App() {
         </div>
 
         {/* MODO EDICIÓN MANUAL */}
-        {editingInventory && (
+        {editingInventory ? (
           <div className="bg-slate-800/50 p-4 rounded-xl border border-blue-500/30 mb-4 animate-in fade-in zoom-in-95">
             <p className="text-xs text-blue-400 font-bold mb-3 uppercase text-center flex items-center justify-center gap-2">
               <Edit2 size={12}/> Calibración Manual
@@ -306,35 +342,18 @@ export default function App() {
                 <input type="number" value={tempInv.ves} onChange={e=>setTempInv({...tempInv, ves: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/>
               </div>
             </div>
-            <button onClick={saveInventoryManual} className="w-full bg-blue-600 py-2 rounded-lg text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-500">
+            
+            <div className="space-y-3">
+              <button onClick={saveInventoryManual} className="w-full bg-blue-600 py-2 rounded-lg text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-500">
                 <Save size={14}/> Guardar Cambios
-            </button>
-          </div>
-        )}
-
-        {/* PANEL DE EMERGENCIA (VISIBLE EN MODO SEGURO) */}
-        {safeMode && (
-            <div className="bg-red-500/10 border border-red-500/50 p-4 rounded-xl mb-4">
-                <div className="flex items-start gap-3">
-                    <ShieldAlert className="text-red-500 shrink-0" size={24}/>
-                    <div>
-                        <h3 className="text-sm font-bold text-white mb-1">Modo de Recuperación</h3>
-                        <p className="text-xs text-slate-300 mb-3">
-                            Se han ocultado las listas para evitar errores de visualización. Si la app fallaba, usa el botón de abajo para limpiar los datos corruptos.
-                        </p>
-                        <button onClick={handleResetApp} className="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold w-full hover:bg-red-500 mb-3">
-                            BORRAR TODO Y REINICIAR (RESCUE)
-                        </button>
-                        <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
-                            <input type="checkbox" checked={!safeMode} onChange={() => setSafeMode(false)} className="accent-blue-500"/>
-                            Intentar cargar datos (Desactivar Modo Seguro)
-                        </label>
-                    </div>
-                </div>
+              </button>
+              
+              <button onClick={handleResetApp} className="w-full bg-red-500/10 border border-red-500/50 py-2 rounded-lg text-red-400 font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-500 hover:text-white transition-colors">
+                <AlertTriangle size={14}/> Restablecer Fábrica (Borrar Todo)
+              </button>
             </div>
-        )}
-
-        {!editingInventory && (
+          </div>
+        ) : (
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
               <div className="flex items-center gap-2 mb-1">
@@ -355,27 +374,23 @@ export default function App() {
         )}
       </div>
 
-      {/* BODY (OCULTO EN MODO SEGURO) */}
-      {!safeMode && (
-        <div className="p-4">
-            {view === 'dashboard' && <Dashboard transactions={transactions} onDelete={handleDeleteTransaction} />}
-            {view === 'trade' && <TradeForm onTrade={handleTrade} onCancel={() => setView('dashboard')} avgPrice={inventory.avgPrice} />}
-            {view === 'stats' && <StatsModule transactions={transactions} />}
-            {view === 'loans' && <LoansModule loans={loans} user={user} db={db} appId={appId} />}
-            {view === 'calculator' && <ArbitrageCalc />}
-        </div>
-      )}
+      {/* BODY */}
+      <div className="p-4">
+        {view === 'dashboard' && <Dashboard transactions={transactions} onDelete={handleDeleteTransaction} />}
+        {view === 'trade' && <TradeForm onTrade={handleTrade} onCancel={() => setView('dashboard')} avgPrice={inventory.avgPrice} />}
+        {view === 'stats' && <StatsModule transactions={transactions} />}
+        {view === 'loans' && <LoansModule loans={loans} user={user} db={db} appId={appId} />}
+        {view === 'calculator' && <ArbitrageCalc />}
+      </div>
 
-      {/* NAV (OCULTO EN MODO SEGURO) */}
-      {!safeMode && (
-        <div className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur border-t border-slate-800 flex justify-around p-3 max-w-md mx-auto z-50">
-            <NavButton icon={<TrendingUp/>} label="Operar" active={view === 'trade'} onClick={() => setView('trade')} />
-            <NavButton icon={<History/>} label="Historial" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
-            <NavButton icon={<PieChart/>} label="Stats" active={view === 'stats'} onClick={() => setView('stats')} />
-            <NavButton icon={<Users/>} label="Deudas" active={view === 'loans'} onClick={() => setView('loans')} />
-            <NavButton icon={<Calculator/>} label="Calc" active={view === 'calculator'} onClick={() => setView('calculator')} />
-        </div>
-      )}
+      {/* NAV */}
+      <div className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur border-t border-slate-800 flex justify-around p-3 max-w-md mx-auto z-50">
+        <NavButton icon={<TrendingUp/>} label="Operar" active={view === 'trade'} onClick={() => setView('trade')} />
+        <NavButton icon={<History/>} label="Historial" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
+        <NavButton icon={<PieChart/>} label="Stats" active={view === 'stats'} onClick={() => setView('stats')} />
+        <NavButton icon={<Users/>} label="Deudas" active={view === 'loans'} onClick={() => setView('loans')} />
+        <NavButton icon={<Calculator/>} label="Calc" active={view === 'calculator'} onClick={() => setView('calculator')} />
+      </div>
     </div>
   );
 }
