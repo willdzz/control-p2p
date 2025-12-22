@@ -47,7 +47,10 @@ import {
   Heart,
   Car,
   HelpCircle,
-  Cross
+  Cross,
+  Save,
+  X,
+  AlertTriangle
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -73,7 +76,13 @@ export default function App() {
   const [inventory, setInventory] = useState({ usdt: 0, ves: 0, avgPrice: 0 });
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [editingAvg, setEditingAvg] = useState(false);
+  
+  // Estados para edición manual
+  const [editingInventory, setEditingInventory] = useState(false);
+  const [tempInv, setTempInv] = useState({ usdt: '', ves: '', avgPrice: '' });
+
+  // Constante Global
+  const appId = 'p2p-v2-production';
 
   // Auth Listener
   useEffect(() => {
@@ -87,7 +96,6 @@ export default function App() {
   // Data Fetching
   useEffect(() => {
     if (!user) return;
-    const appId = 'p2p-v2-production';
 
     const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
     const unsubTx = onSnapshot(qTx, (snap) => {
@@ -98,7 +106,6 @@ export default function App() {
     const unsubInv = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        // BLINDAJE CONTRA NaN: Si viene corrupto, usamos 0
         setInventory({
           usdt: parseFloat(data.usdt) || 0,
           ves: parseFloat(data.ves) || 0,
@@ -119,10 +126,8 @@ export default function App() {
   }, [user]);
 
   // --- LÓGICA DE NEGOCIO ---
-  const appId = 'p2p-v2-production';
 
   const handleTrade = async (data) => {
-    // PROTECCIÓN DE SALDOS: Asegurar que operamos sobre números
     let newInv = { 
       usdt: parseFloat(inventory.usdt) || 0,
       ves: parseFloat(inventory.ves) || 0,
@@ -190,7 +195,6 @@ export default function App() {
   const handleDeleteTransaction = async (tx) => {
     if(!confirm("¿Borrar transacción y revertir saldos?")) return;
     
-    // PROTECCIÓN DE SALDOS EN REVERSO
     let newInv = { 
       usdt: parseFloat(inventory.usdt) || 0,
       ves: parseFloat(inventory.ves) || 0,
@@ -239,6 +243,27 @@ export default function App() {
     await setDoc(invRef, newInv);
   };
 
+  const saveInventoryManual = async () => {
+    const newInv = {
+      usdt: parseFloat(tempInv.usdt) || 0,
+      ves: parseFloat(tempInv.ves) || 0,
+      avgPrice: parseFloat(tempInv.avgPrice) || 0
+    };
+    setInventory(newInv);
+    const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
+    await setDoc(invRef, newInv);
+    setEditingInventory(false);
+  };
+
+  const startEditing = () => {
+    setTempInv({
+      usdt: inventory.usdt,
+      ves: inventory.ves,
+      avgPrice: inventory.avgPrice
+    });
+    setEditingInventory(true);
+  };
+
   const handleUpdateAvg = async (newVal) => {
     const price = parseFloat(newVal);
     if(price > 0) {
@@ -250,6 +275,38 @@ export default function App() {
     }
   };
 
+  // --- V2.7: FUNCIÓN DE RESET TOTAL ---
+  const handleResetApp = async () => {
+    if (!confirm("⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR TODA LA INFORMACIÓN?\n\nSe eliminarán todas las transacciones, deudas y se pondrán los saldos en CERO.\n\nEsta acción no se puede deshacer.")) return;
+
+    setLoading(true);
+
+    // 1. Resetear Inventario
+    const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
+    await setDoc(invRef, { usdt: 0, ves: 0, avgPrice: 0 });
+
+    // 2. Borrar Transacciones (Local y Remoto)
+    // Nota: Firestore requiere borrar documento por documento si no es desde Admin SDK
+    const deleteTxPromises = transactions.map(tx => 
+      deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id))
+    );
+
+    // 3. Borrar Préstamos
+    const deleteLoanPromises = loans.map(l => 
+      deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', l.id))
+    );
+
+    await Promise.all([...deleteTxPromises, ...deleteLoanPromises]);
+    
+    // Resetear estados locales para feedback inmediato
+    setTransactions([]);
+    setLoans([]);
+    setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
+    setEditingInventory(false);
+    setLoading(false);
+    alert("Aplicación restablecida de fábrica correctamente.");
+  };
+
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
@@ -257,7 +314,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V2.5 - Estadísticas y Categorías de Gasto.</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V2.7 - Gestión Total.</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -286,44 +343,85 @@ export default function App() {
               <span className="text-xs text-slate-500">USDT (Est.)</span>
             </div>
           </div>
-          <button onClick={() => signOut(auth)} className="bg-slate-800 p-2 rounded-lg text-slate-400 hover:text-white"><LogOut size={16}/></button>
+          <div className="flex gap-2">
+             <button 
+               onClick={editingInventory ? () => setEditingInventory(false) : startEditing} 
+               className={`p-2 rounded-lg transition-colors ${editingInventory ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-400 hover:text-white'}`}
+             >
+               {editingInventory ? <X size={16}/> : <Edit2 size={16}/>}
+             </button>
+             <button onClick={() => signOut(auth)} className="bg-slate-800 p-2 rounded-lg text-slate-400 hover:text-white"><LogOut size={16}/></button>
+          </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
-            <div className="flex items-center gap-2 mb-1 justify-between">
-              <div className="flex items-center gap-2">
-                <Wallet size={14} className="text-emerald-400"/>
-                <span className="text-xs text-slate-400">Inventario USDT</span>
+        {/* MODO EDICIÓN / RESET */}
+        {editingInventory ? (
+          <div className="bg-slate-800/50 p-4 rounded-xl border border-blue-500/30 mb-4 animate-in fade-in zoom-in-95">
+            <p className="text-xs text-blue-400 font-bold mb-3 uppercase text-center flex items-center justify-center gap-2">
+              <Edit2 size={12}/> Calibración Manual
+            </p>
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="text-[10px] text-slate-400">Saldo USDT</label>
+                <input type="number" value={tempInv.usdt} onChange={e=>setTempInv({...tempInv, usdt: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/>
               </div>
-              <button onClick={() => setEditingAvg(!editingAvg)} className="text-xs text-slate-600 hover:text-white"><Edit2 size={12}/></button>
+              <div>
+                <label className="text-[10px] text-slate-400">Promedio</label>
+                <input type="number" value={tempInv.avgPrice} onChange={e=>setTempInv({...tempInv, avgPrice: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/>
+              </div>
+              <div className="col-span-2">
+                <label className="text-[10px] text-slate-400">Liquidez VES</label>
+                <input type="number" value={tempInv.ves} onChange={e=>setTempInv({...tempInv, ves: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/>
+              </div>
             </div>
-            <p className="text-lg font-mono font-bold text-white">{(inventory.usdt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
             
-            {editingAvg ? (
-               <input 
-                 autoFocus
-                 type="number" 
-                 className="w-full bg-slate-950 text-xs p-1 rounded border border-slate-600 text-white"
-                 defaultValue={inventory.avgPrice}
-                 onBlur={(e) => handleUpdateAvg(e.target.value)}
-                 onKeyDown={(e) => e.key === 'Enter' && handleUpdateAvg(e.currentTarget.value)}
-               />
-            ) : (
-               <p className="text-[10px] text-slate-500">Costo Prom: <span className="text-emerald-400">{(inventory.avgPrice || 0).toFixed(4)}</span></p>
-            )}
-          </div>
-          
-          <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
-            <div className="flex items-center gap-2 mb-1">
-              <Landmark size={14} className="text-blue-400"/>
-              <span className="text-xs text-slate-400">Liquidez VES</span>
+            <div className="space-y-3">
+              <button onClick={saveInventoryManual} className="w-full bg-blue-600 py-2 rounded-lg text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-500">
+                <Save size={14}/> Guardar Cambios
+              </button>
+              
+              {/* BOTÓN DE RESET TOTAL V2.7 */}
+              <button onClick={handleResetApp} className="w-full bg-red-500/10 border border-red-500/50 py-2 rounded-lg text-red-400 font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-500 hover:text-white transition-colors">
+                <AlertTriangle size={14}/> Restablecer Fábrica (Borrar Todo)
+              </button>
             </div>
-            {/* AQUÍ SE MUESTRA EL SALDO VES REPARADO */}
-            <p className="text-lg font-mono font-bold text-white">{(inventory.ves || 0).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
-            <p className="text-[10px] text-slate-500">Bs Disponibles</p>
           </div>
-        </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
+              <div className="flex items-center gap-2 mb-1 justify-between">
+                <div className="flex items-center gap-2">
+                  <Wallet size={14} className="text-emerald-400"/>
+                  <span className="text-xs text-slate-400">Inventario USDT</span>
+                </div>
+                <button onClick={() => setEditingAvg(!editingAvg)} className="text-xs text-slate-600 hover:text-white"><Edit2 size={12}/></button>
+              </div>
+              <p className="text-lg font-mono font-bold text-white">{(inventory.usdt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
+              
+              {editingAvg ? (
+                 <input 
+                   autoFocus
+                   type="number" 
+                   className="w-full bg-slate-950 text-xs p-1 rounded border border-slate-600 text-white"
+                   defaultValue={inventory.avgPrice}
+                   onBlur={(e) => handleUpdateAvg(e.target.value)}
+                   onKeyDown={(e) => e.key === 'Enter' && handleUpdateAvg(e.currentTarget.value)}
+                 />
+              ) : (
+                 <p className="text-[10px] text-slate-500">Costo Prom: <span className="text-emerald-400">{(inventory.avgPrice || 0).toFixed(4)}</span></p>
+              )}
+            </div>
+            
+            <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
+              <div className="flex items-center gap-2 mb-1">
+                <Landmark size={14} className="text-blue-400"/>
+                <span className="text-xs text-slate-400">Liquidez VES</span>
+              </div>
+              <p className="text-lg font-mono font-bold text-white">{(inventory.ves || 0).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
+              <p className="text-[10px] text-slate-500">Bs Disponibles</p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* BODY */}
@@ -331,7 +429,7 @@ export default function App() {
         {view === 'dashboard' && <Dashboard transactions={transactions} onDelete={handleDeleteTransaction} />}
         {view === 'trade' && <TradeForm onTrade={handleTrade} onCancel={() => setView('dashboard')} avgPrice={inventory.avgPrice} />}
         {view === 'stats' && <StatsModule transactions={transactions} />}
-        {view === 'loans' && <LoansModule loans={loans} user={user} db={db} appId={'p2p-v2-production'} />}
+        {view === 'loans' && <LoansModule loans={loans} user={user} db={db} appId={appId} />}
         {view === 'calculator' && <ArbitrageCalc />}
       </div>
 
@@ -450,7 +548,6 @@ function StatsModule({ transactions }) {
     const totalProfitUSDT = transactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
     
     // Estimado Profit en Bs (Usando tasa promedio de ventas reciente o referencial)
-    // Para simplificar la comparación visual, usaremos una tasa promedio implícita de las ventas
     const sells = transactions.filter(t => t.type === 'sell');
     const avgSellRate = sells.length > 0 ? (sells.reduce((acc, t) => acc + t.rate, 0) / sells.length) : 0;
     const totalProfitBS = totalProfitUSDT * avgSellRate;
@@ -544,7 +641,6 @@ function TradeForm({ onTrade, onCancel, avgPrice }) {
   const [swapFee, setSwapFee] = useState('');
   const [capCurrency, setCapCurrency] = useState('VES');
   
-  // V2.5 Categorías Gasto
   const [expenseCategory, setExpenseCategory] = useState('Comida');
   const [expenseNote, setExpenseNote] = useState('');
 
