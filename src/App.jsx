@@ -51,13 +51,20 @@ import {
   Save,
   X,
   AlertTriangle,
-  Info,
-  ShieldAlert
+  Info
 } from 'lucide-react';
 
-// --- CONFIGURACIÓN DE FIREBASE ---
-const firebaseConfig = JSON.parse(__firebase_config);
+// --- CONFIGURACIÓN DE FIREBASE (RESTAURADA) ---
+const firebaseConfig = {
+  apiKey: "AIzaSyCaa72nfDTjHn-VDRe2-IqjnlbXAqJkEu4",
+  authDomain: "miwallet-p2p.firebaseapp.com",
+  projectId: "miwallet-p2p",
+  storageBucket: "miwallet-p2p.firebasestorage.app",
+  messagingSenderId: "1028160097126",
+  appId: "1:1028160097126:web:170715208170f367e616a7"
+};
 
+// Inicialización segura
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -72,7 +79,7 @@ export default function App() {
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // V3.2: Modo Seguro activado por defecto para prevenir el crash inicial
+  // Modo Seguro activado por defecto
   const [safeMode, setSafeMode] = useState(true);
   
   const [editingInventory, setEditingInventory] = useState(false);
@@ -93,37 +100,42 @@ export default function App() {
     
     const safetyTimeout = setTimeout(() => setLoading(false), 5000);
 
-    // Cargamos datos, pero si safeMode es true, NO los renderizaremos en componentes peligrosos
-    const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
-    const unsubTx = onSnapshot(qTx, (snap) => {
-      setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (err) => console.error("Error Tx", err));
+    // Carga de datos con manejo de errores
+    try {
+        const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
+        const unsubTx = onSnapshot(qTx, (snap) => {
+          setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        }, (err) => console.error("Error Tx", err));
 
-    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
-    const unsubInv = onSnapshot(docRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        setInventory({
-          usdt: parseFloat(data.usdt) || 0,
-          ves: parseFloat(data.ves) || 0,
-          avgPrice: parseFloat(data.avgPrice) || 0
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
+        const unsubInv = onSnapshot(docRef, (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            setInventory({
+              usdt: parseFloat(data.usdt) || 0,
+              ves: parseFloat(data.ves) || 0,
+              avgPrice: parseFloat(data.avgPrice) || 0
+            });
+          } else {
+            setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
+          }
+          setLoading(false);
+          clearTimeout(safetyTimeout);
+        }, (err) => {
+            console.error("Error Inv", err);
+            setLoading(false);
         });
-      } else {
-        setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
-      }
-      setLoading(false);
-      clearTimeout(safetyTimeout);
-    }, (err) => {
-        console.error("Error Inv", err);
+
+        const qLoans = query(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), orderBy('createdAt', 'desc'));
+        const unsubLoans = onSnapshot(qLoans, (snap) => {
+          setLoans(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        }, (err) => console.error("Error Loans", err));
+
+        return () => { unsubTx(); unsubInv(); unsubLoans(); clearTimeout(safetyTimeout); };
+    } catch (e) {
+        console.error("Error crítico en hooks", e);
         setLoading(false);
-    });
-
-    const qLoans = query(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), orderBy('createdAt', 'desc'));
-    const unsubLoans = onSnapshot(qLoans, (snap) => {
-      setLoans(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (err) => console.error("Error Loans", err));
-
-    return () => { unsubTx(); unsubInv(); unsubLoans(); clearTimeout(safetyTimeout); };
+    }
   }, [user]);
 
   // --- LÓGICA DE NEGOCIO ---
@@ -182,12 +194,11 @@ export default function App() {
 
   const handleDeleteTransaction = async (tx) => {
     if(!confirm("¿Borrar transacción?")) return;
-    // En V3.2 borramos directo para limpiar rápido
     await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id));
   };
 
   const handleResetApp = async () => {
-    if (!confirm("⚠️ ACCIÓN DESTRUCTIVA: Se borrarán TODOS los datos para recuperar la App. ¿Continuar?")) return;
+    if (!confirm("⚠️ ACCIÓN DESTRUCTIVA: Se borrarán TODOS los datos. ¿Continuar?")) return;
     setLoading(true);
     try {
         const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
@@ -250,7 +261,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.2 - Recovery Mode</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.3 - Configurada</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -293,18 +304,18 @@ export default function App() {
           </div>
         </div>
 
-        {/* PANEL DE MODO SEGURO (V3.2) */}
+        {/* PANEL DE MODO SEGURO */}
         {safeMode && (
             <div className="bg-red-500/10 border border-red-500/50 p-4 rounded-xl mb-4">
                 <div className="flex items-start gap-3">
-                    <ShieldAlert className="text-red-500 shrink-0" size={24}/>
+                    <AlertTriangle className="text-red-500 shrink-0" size={24}/>
                     <div>
-                        <h3 className="text-sm font-bold text-white mb-1">Protección de Crash Activada</h3>
+                        <h3 className="text-sm font-bold text-white mb-1">Modo Recuperación</h3>
                         <p className="text-xs text-slate-300 mb-3">
-                            Se han ocultado las listas porque hay datos corruptos causando el cierre inesperado.
+                            Usa el botón de abajo para limpiar cualquier dato corrupto que impida iniciar la app.
                         </p>
                         <button onClick={handleResetApp} className="bg-red-600 text-white px-4 py-3 rounded-lg text-xs font-bold w-full hover:bg-red-500 mb-3 shadow-lg shadow-red-900/20">
-                            BORRAR TODO Y REINICIAR (RESCUE)
+                            BORRAR TODO Y REINICIAR
                         </button>
                         <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer p-2 border border-slate-700 rounded hover:bg-slate-800">
                             <input type="checkbox" checked={!safeMode} onChange={() => setSafeMode(false)} className="accent-blue-500"/>
@@ -381,7 +392,7 @@ export default function App() {
         )}
       </div>
 
-      {/* BODY (OCULTO EN MODO SEGURO) */}
+      {/* BODY */}
       {!safeMode && (
         <div className="p-4">
             {view === 'dashboard' && <Dashboard transactions={transactions} onDelete={handleDeleteTransaction} />}
@@ -392,7 +403,7 @@ export default function App() {
         </div>
       )}
 
-      {/* NAV (OCULTO EN MODO SEGURO) */}
+      {/* NAV */}
       {!safeMode && (
         <div className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur border-t border-slate-800 flex justify-around p-3 max-w-md mx-auto z-50">
             <NavButton icon={<TrendingUp/>} label="Operar" active={view === 'trade'} onClick={() => setView('trade')} />
