@@ -67,6 +67,12 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
+// --- UTILIDAD DE SEGURIDAD (ANTI-CRASH) ---
+const safeNum = (val) => {
+  const num = parseFloat(val);
+  return isNaN(num) ? 0 : num;
+};
+
 // --- COMPONENTE PRINCIPAL ---
 export default function App() {
   const [user, setUser] = useState(null);
@@ -76,7 +82,7 @@ export default function App() {
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // Estados para edición manual (V3.0 Feature)
+  // Estados para edición manual
   const [editingInventory, setEditingInventory] = useState(false);
   const [tempInv, setTempInv] = useState({ usdt: '', ves: '', avgPrice: '' });
 
@@ -95,96 +101,94 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     
-    // Timeout de seguridad visual
+    // Timeout de seguridad
     const safetyTimeout = setTimeout(() => setLoading(false), 5000);
 
     const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
     const unsubTx = onSnapshot(qTx, (snap) => {
       setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (error) => console.error("Error Tx:", error));
+    }, (err) => console.error("Tx Error", err));
 
     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
     const unsubInv = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
         setInventory({
-          usdt: parseFloat(data.usdt) || 0,
-          ves: parseFloat(data.ves) || 0,
-          avgPrice: parseFloat(data.avgPrice) || 0
+          usdt: safeNum(data.usdt),
+          ves: safeNum(data.ves),
+          avgPrice: safeNum(data.avgPrice)
         });
       } else {
         setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
       }
       setLoading(false);
       clearTimeout(safetyTimeout);
-    }, (error) => console.error("Error Inv:", error));
+    }, (err) => {
+        console.error("Inv Error", err);
+        setLoading(false);
+    });
 
     const qLoans = query(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), orderBy('createdAt', 'desc'));
     const unsubLoans = onSnapshot(qLoans, (snap) => {
       setLoans(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
+    }, (err) => console.error("Loans Error", err));
 
     return () => { unsubTx(); unsubInv(); unsubLoans(); clearTimeout(safetyTimeout); };
   }, [user]);
 
   // --- LÓGICA DE NEGOCIO ---
-
   const handleTrade = async (data) => {
     let newInv = { ...inventory };
-    // Asegurar números
-    newInv.usdt = parseFloat(newInv.usdt) || 0;
-    newInv.ves = parseFloat(newInv.ves) || 0;
-    newInv.avgPrice = parseFloat(newInv.avgPrice) || 0;
-
-    let profit = 0;
+    newInv.usdt = safeNum(newInv.usdt);
+    newInv.ves = safeNum(newInv.ves);
+    newInv.avgPrice = safeNum(newInv.avgPrice);
 
     if (data.type === 'buy') {
       const totalCostOld = newInv.usdt * newInv.avgPrice;
-      const costNew = data.totalBS; 
-      const totalUSDT = newInv.usdt + data.amountUSDT; 
+      const costNew = safeNum(data.totalBS); 
+      const totalUSDT = newInv.usdt + safeNum(data.amountUSDT); 
       const totalCost = totalCostOld + costNew;
-      
       newInv.avgPrice = totalUSDT > 0 ? totalCost / totalUSDT : 0;
       newInv.usdt = totalUSDT;
       newInv.ves -= costNew;
 
     } else if (data.type === 'sell') {
-      const revenueVES = data.totalBS; 
+      const revenueVES = safeNum(data.totalBS); 
+      // Calculamos profit contable solo para registro
+      const costOfSold = safeNum(data.amountUSDT) * newInv.avgPrice;
+      const profitBS = revenueVES - costOfSold;
+      data.profitUSDT = safeNum(data.rate) > 0 ? profitBS / safeNum(data.rate) : 0;
       
-      // Calcular Profit para registro (metadata)
-      const costOfSold = data.amountUSDT * newInv.avgPrice;
-      profit = revenueVES - costOfSold;
-      data.profitUSDT = data.rate > 0 ? profit / data.rate : 0;
-      data.avgPriceAtMoment = newInv.avgPrice; // Guardamos el costo base histórico
-
-      // Afectar inventario
-      newInv.usdt -= (data.amountUSDT + (data.feeUSDT || 0));
+      newInv.usdt -= (safeNum(data.amountUSDT) + safeNum(data.feeUSDT));
       newInv.ves += revenueVES;
     
     } else if (data.type === 'swap') {
-      const fee = data.feeUSDT || 0;
+      const fee = safeNum(data.feeUSDT);
       const totalCost = newInv.usdt * newInv.avgPrice;
       const newTotalUSDT = newInv.usdt - fee;
-
       newInv.usdt = newTotalUSDT;
       newInv.avgPrice = newTotalUSDT > 0 ? totalCost / newTotalUSDT : 0;
 
     } else if (data.type === 'expense') {
-      newInv.ves -= data.amountBS;
+      newInv.ves -= safeNum(data.amountBS);
+      // Dolarizar gasto para estadísticas
+      data.expenseUSDT = newInv.avgPrice > 0 ? safeNum(data.amountBS) / newInv.avgPrice : 0;
 
     } else if (data.type === 'capital') {
       if (data.currency === 'VES') {
-        newInv.ves += data.amount;
+        newInv.ves += safeNum(data.amount);
       } else if (data.currency === 'USDT') {
         const totalCostOld = newInv.usdt * newInv.avgPrice;
-        const costNew = data.amount * (data.rate || 0); 
-        const totalUSDT = newInv.usdt + data.amount;
+        const costNew = safeNum(data.amount) * safeNum(data.rate); 
+        const totalUSDT = newInv.usdt + safeNum(data.amount);
         const totalCost = totalCostOld + costNew;
-        
         newInv.avgPrice = totalUSDT > 0 ? totalCost / totalUSDT : 0;
         newInv.usdt = totalUSDT;
       }
     }
+
+    // Guardar referencia histórica del costo base
+    data.avgPriceAtMoment = newInv.avgPrice;
 
     await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), {
       ...data,
@@ -201,42 +205,41 @@ export default function App() {
     if(!confirm("¿Borrar esta transacción y revertir los saldos?")) return;
     
     let newInv = { ...inventory };
-    newInv.usdt = parseFloat(newInv.usdt) || 0;
-    newInv.ves = parseFloat(newInv.ves) || 0;
-    newInv.avgPrice = parseFloat(newInv.avgPrice) || 0;
+    newInv.usdt = safeNum(newInv.usdt);
+    newInv.ves = safeNum(newInv.ves);
+    newInv.avgPrice = safeNum(newInv.avgPrice);
 
     if (tx.type === 'buy') {
-      const totalCost = tx.totalBS || (tx.amountUSDT * tx.rate);
+      const totalCost = safeNum(tx.totalBS) || (safeNum(tx.amountUSDT) * safeNum(tx.rate));
       const currentTotalVal = newInv.usdt * newInv.avgPrice;
       const prevTotalVal = currentTotalVal - totalCost;
-      const prevUSDT = newInv.usdt - tx.amountUSDT;
-
+      const prevUSDT = newInv.usdt - safeNum(tx.amountUSDT);
       newInv.usdt = prevUSDT;
       newInv.ves += totalCost;
       newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
 
     } else if (tx.type === 'sell') {
-      const totalUSDTBack = tx.amountUSDT + (tx.feeUSDT || 0);
+      const totalUSDTBack = safeNum(tx.amountUSDT) + safeNum(tx.feeUSDT);
       newInv.usdt += totalUSDTBack;
-      newInv.ves -= (tx.totalBS || (tx.amountUSDT * tx.rate));
+      newInv.ves -= (safeNum(tx.totalBS) || (safeNum(tx.amountUSDT) * safeNum(tx.rate)));
 
     } else if (tx.type === 'swap') {
-      const fee = tx.feeUSDT || 0;
+      const fee = safeNum(tx.feeUSDT);
       const currentTotalVal = newInv.usdt * newInv.avgPrice;
       const prevUSDT = newInv.usdt + fee;
       newInv.usdt = prevUSDT;
       newInv.avgPrice = prevUSDT > 0 ? currentTotalVal / prevUSDT : 0;
 
     } else if (tx.type === 'expense') {
-      newInv.ves += (tx.amountBS || 0);
+      newInv.ves += safeNum(tx.amountBS);
 
     } else if (tx.type === 'capital') {
-       if (tx.currency === 'VES') newInv.ves -= (tx.amount || 0);
+       if (tx.currency === 'VES') newInv.ves -= safeNum(tx.amount);
        else if (tx.currency === 'USDT') {
-         const costWas = (tx.amount || 0) * (tx.rate || 0);
+         const costWas = safeNum(tx.amount) * safeNum(tx.rate);
          const currentTotalVal = newInv.usdt * newInv.avgPrice;
          const prevTotalVal = currentTotalVal - costWas;
-         const prevUSDT = newInv.usdt - (tx.amount || 0);
+         const prevUSDT = newInv.usdt - safeNum(tx.amount);
          newInv.usdt = prevUSDT;
          newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
        }
@@ -247,22 +250,19 @@ export default function App() {
     await setDoc(invRef, newInv);
   };
 
-  // Función de Reset (V3.0 - Mejorada para borrar profundo si es necesario)
+  // Reset Total (Deep Clean)
   const handleResetApp = async () => {
     if (!confirm("⚠️ PELIGRO: ¿Borrar TODA la base de datos y reiniciar en CERO?")) return;
 
     setLoading(true);
     try {
-        // 1. Resetear Inventario
         const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
         await setDoc(invRef, { usdt: 0, ves: 0, avgPrice: 0 });
 
-        // 2. Buscar y Borrar Transacciones (Fetch directo para limpieza profunda)
         const txCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'transactions');
         const txSnapshot = await getDocs(txCollection);
         const txDeletePromises = txSnapshot.docs.map(doc => deleteDoc(doc.ref));
 
-        // 3. Buscar y Borrar Préstamos
         const loansCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'loans');
         const loansSnapshot = await getDocs(loansCollection);
         const loansDeletePromises = loansSnapshot.docs.map(doc => deleteDoc(doc.ref));
@@ -277,16 +277,16 @@ export default function App() {
         alert("Aplicación restablecida de fábrica correctamente.");
     } catch (e) {
         console.error(e);
-        alert("Hubo un error al limpiar. Intenta de nuevo.");
+        alert("Hubo un error al limpiar: " + e.message);
         setLoading(false);
     }
   };
 
   const saveInventoryManual = async () => {
     const newInv = {
-      usdt: parseFloat(tempInv.usdt) || 0,
-      ves: parseFloat(tempInv.ves) || 0,
-      avgPrice: parseFloat(tempInv.avgPrice) || 0
+      usdt: safeNum(tempInv.usdt),
+      ves: safeNum(tempInv.ves),
+      avgPrice: safeNum(tempInv.avgPrice)
     };
     setInventory(newInv);
     const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
@@ -304,7 +304,7 @@ export default function App() {
   };
 
   const handleUpdateAvg = async (newVal) => {
-    const price = parseFloat(newVal);
+    const price = safeNum(newVal);
     if(price > 0) {
       const newInv = { ...inventory, avgPrice: price };
       setInventory(newInv);
@@ -320,7 +320,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.0.1 (Restaurada)</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.7.1 - Stats Pro</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -344,7 +344,7 @@ export default function App() {
             <h2 className="text-xs text-slate-400 font-semibold tracking-wider uppercase">Patrimonio Neto</h2>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-bold text-white">
-                $ {((inventory.usdt || 0) + ((inventory.ves || 0) / (inventory.avgPrice || 1))).toFixed(2)}
+                $ {(safeNum(inventory.usdt) + (safeNum(inventory.ves) / (safeNum(inventory.avgPrice) || 1))).toFixed(2)}
               </span>
               <span className="text-xs text-slate-500">USDT (Est.)</span>
             </div>
@@ -400,9 +400,9 @@ export default function App() {
                   <span className="text-xs text-slate-400">Inventario USDT</span>
                 </div>
                 {/* Visualizador de Precio Promedio Rapido */}
-                <span className="text-[10px] text-emerald-400 bg-emerald-400/10 px-1 rounded">Avg: {(inventory.avgPrice || 0).toFixed(2)}</span>
+                <span className="text-[10px] text-emerald-400 bg-emerald-400/10 px-1 rounded">Avg: {safeNum(inventory.avgPrice).toFixed(2)}</span>
               </div>
-              <p className="text-lg font-mono font-bold text-white">{(inventory.usdt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
+              <p className="text-lg font-mono font-bold text-white">{safeNum(inventory.usdt).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
               
               {editingInventory ? (
                  <input 
@@ -421,7 +421,7 @@ export default function App() {
                 <Landmark size={14} className="text-blue-400"/>
                 <span className="text-xs text-slate-400">Liquidez VES</span>
               </div>
-              <p className="text-lg font-mono font-bold text-white">{(inventory.ves || 0).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
+              <p className="text-lg font-mono font-bold text-white">{safeNum(inventory.ves).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
             </div>
           </div>
         )}
@@ -429,9 +429,9 @@ export default function App() {
 
       {/* BODY */}
       <div className="p-4">
-        {view === 'dashboard' && <Dashboard transactions={transactions} onDelete={handleDeleteTransaction} />}
+        {view === 'dashboard' && <Dashboard transactions={transactions} inventory={inventory} onDelete={handleDeleteTransaction} />}
         {view === 'trade' && <TradeForm onTrade={handleTrade} onCancel={() => setView('dashboard')} avgPrice={inventory.avgPrice} />}
-        {view === 'stats' && <StatsModule transactions={transactions} />}
+        {view === 'stats' && <StatsModule transactions={transactions} inventory={inventory} />}
         {view === 'loans' && <LoansModule loans={loans} user={user} db={db} appId={appId} />}
         {view === 'calculator' && <ArbitrageCalc />}
       </div>
@@ -448,38 +448,73 @@ export default function App() {
   );
 }
 
-// --- MÓDULO DE DASHBOARD (Resumen Hoy) ---
-function Dashboard({ transactions, onDelete }) {
-  // FIX CRÍTICO V3.0.1: Incluir transacciones pendientes (sin fecha)
-  const todayStats = useMemo(() => {
+// --- MÓDULOS DE INTERFAZ ---
+
+function Dashboard({ transactions, inventory, onDelete }) {
+  // LÓGICA V3.7: Crecimiento Real (Time Travel)
+  const todayMetrics = useMemo(() => {
     const startOfDay = new Date();
     startOfDay.setHours(0,0,0,0);
-    
+    const startTime = startOfDay.getTime();
+
+    // 1. Filtrar txs de hoy (incluyendo pendientes)
     const todays = transactions.filter(t => {
-      const txTime = t.createdAt ? t.createdAt.seconds * 1000 : Date.now();
-      return txTime > startOfDay.getTime();
+      const time = t.createdAt ? t.createdAt.seconds * 1000 : Date.now();
+      return time > startTime;
     });
+
+    // 2. Reconstruir Patrimonio al inicio del día
+    let startUSDT = safeNum(inventory.usdt);
+    let startVES = safeNum(inventory.ves);
     
-    const sold = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.totalBS || 0), 0);
-    const profit = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
-    const spent = todays.filter(t => t.type === 'expense').reduce((acc, curr) => acc + (curr.amountBS || 0), 0);
-    return { count: todays.length, sold, profit, spent };
-  }, [transactions]);
+    todays.forEach(tx => {
+       if(tx.type === 'buy') {
+          startUSDT -= safeNum(tx.amountUSDT);
+          startVES += safeNum(tx.totalBS);
+       } else if (tx.type === 'sell') {
+          startUSDT += (safeNum(tx.amountUSDT) + safeNum(tx.feeUSDT));
+          startVES -= safeNum(tx.totalBS);
+       } else if (tx.type === 'swap') {
+          startUSDT += safeNum(tx.feeUSDT);
+       } else if (tx.type === 'expense') {
+          startVES += safeNum(tx.amountBS);
+       } else if (tx.type === 'capital') {
+          if(tx.currency === 'VES') startVES -= safeNum(tx.amount);
+          else startUSDT -= safeNum(tx.amount);
+       }
+    });
+
+    // Valorar Equity
+    const valuationRate = safeNum(inventory.avgPrice) || 1;
+    const currentEquityUSDT = safeNum(inventory.usdt) + (safeNum(inventory.ves) / valuationRate);
+    const startEquityUSDT = startUSDT + (startVES / valuationRate);
+    
+    // Descontar inyecciones
+    const capitalInjectionsUSDT = todays.filter(t => t.type === 'capital').reduce((acc, t) => {
+        const val = t.currency === 'USDT' ? safeNum(t.amount) : (safeNum(t.amount) / valuationRate);
+        return acc + val;
+    }, 0);
+
+    const realGrowth = (currentEquityUSDT - startEquityUSDT) - capitalInjectionsUSDT;
+
+    return { 
+        count: todays.length, 
+        realGrowth 
+    };
+  }, [transactions, inventory]);
 
   return (
     <div className="space-y-4 pb-20">
       <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex justify-between items-center">
         <div>
           <p className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1"><Calendar size={10}/> Resumen Hoy</p>
-          <p className="text-xs text-slate-500 mt-1">Ventas: <span className="text-white font-mono">{todayStats.sold.toLocaleString()} Bs</span></p>
-          <p className="text-xs text-slate-500">Gastos: <span className="text-red-400 font-mono">{todayStats.spent.toLocaleString()} Bs</span></p>
+          <p className="text-xs text-slate-500 mt-1">Operaciones: <span className="text-white font-mono">{todayMetrics.count}</span></p>
         </div>
         <div className="text-right">
-           <p className="text-[10px] text-slate-400 uppercase font-bold">Profit Est.</p>
-           <p className={`text-xl font-bold ${todayStats.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-             {todayStats.profit >= 0 ? '+' : ''}{todayStats.profit.toFixed(2)}
+           <p className="text-[10px] text-slate-400 uppercase font-bold">Crecimiento Real</p>
+           <p className={`text-xl font-bold ${todayMetrics.realGrowth >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+             {todayMetrics.realGrowth >= 0 ? '+' : ''}{todayMetrics.realGrowth.toFixed(2)} USDT
            </p>
-           <p className="text-[10px] text-slate-600">{todayStats.count} Ops.</p>
         </div>
       </div>
 
@@ -511,33 +546,27 @@ function Dashboard({ transactions, onDelete }) {
                    tx.type === 'capital' ? 'Fondeo' :
                    tx.type === 'swap' ? 'Swap / Transfer' : 'Gasto'}
                 </p>
-                <div className="flex flex-col">
-                  <p className="text-[10px] text-slate-500">
-                    {tx.type === 'swap' ? `Fee: ${(tx.feeUSDT || 0)} USDT` :
-                     tx.type === 'capital' ? `${tx.currency || 'N/A'}` :
-                     tx.type === 'expense' ? (tx.description || 'Sin nota') :
-                     `@ ${(tx.rate || 0)} • ${tx.exchange || '-'}`}
-                  </p>
-                  {tx.type === 'sell' && tx.avgPriceAtMoment && (
-                    <p className="text-[9px] text-slate-600 flex items-center gap-1">
-                      <Info size={8}/> Base: {(tx.avgPriceAtMoment || 0).toFixed(2)}
-                    </p>
-                  )}
-                </div>
+                <p className="text-[10px] text-slate-500">
+                  {tx.type === 'swap' ? `Fee: ${safeNum(tx.feeUSDT)} USDT` :
+                   tx.type === 'capital' ? `${tx.currency}` :
+                   tx.type === 'expense' ? (tx.description || 'Sin nota') :
+                   `@ ${safeNum(tx.rate)}`}
+                </p>
               </div>
             </div>
             
             <div className="flex items-center gap-3">
               <div className="text-right">
                 <p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-emerald-400' : 'text-slate-200'}`}>
-                  {tx.type === 'expense' ? `-Bs ${(tx.amountBS || 0).toLocaleString()}` : 
-                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${(tx.amount || 0).toLocaleString()}` : `+$${(tx.amount || 0)}`) :
-                   tx.type === 'swap' ? `-$${(tx.feeUSDT || 0)}` :
-                   `$${(tx.amountUSDT || 0).toFixed(2)}`}
+                  {tx.type === 'expense' ? `-Bs ${safeNum(tx.amountBS).toLocaleString()}` : 
+                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${safeNum(tx.amount).toLocaleString()}` : `+$${safeNum(tx.amount)}`) :
+                   tx.type === 'swap' ? `-$${safeNum(tx.feeUSDT)}` :
+                   `$${safeNum(tx.amountUSDT).toFixed(2)}`}
                 </p>
-                {(tx.type === 'sell') && (
-                  <p className={`text-[10px] ${(tx.profitUSDT || 0) > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                    {(tx.profitUSDT || 0).toFixed(2)} PnL
+                {/* Profit contable como referencia visual (aunque el real es el Growth) */}
+                {tx.type === 'sell' && (
+                  <p className={`text-[10px] ${safeNum(tx.profitUSDT) > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                    {safeNum(tx.profitUSDT).toFixed(2)} (Contable)
                   </p>
                 )}
               </div>
@@ -550,25 +579,67 @@ function Dashboard({ transactions, onDelete }) {
   );
 }
 
-// --- MÓDULO DE ESTADÍSTICAS ---
-function StatsModule({ transactions }) {
-  const stats = useMemo(() => {
-    const expenses = transactions.filter(t => t.type === 'expense');
-    const totalSpent = expenses.reduce((acc, curr) => acc + (curr.amountBS || 0), 0);
+// --- MÓDULO DE ESTADÍSTICAS PRO ---
+function StatsModule({ transactions, inventory }) {
+  const [range, setRange] = useState('day'); 
 
-    const byCategory = expenses.reduce((acc, curr) => {
+  const metrics = useMemo(() => {
+    const now = new Date();
+    const startTime = new Date();
+    if (range === 'day') startTime.setHours(0,0,0,0);
+    if (range === 'month') startTime.setDate(1); 
+    if (range === 'all') startTime.setFullYear(2000); 
+
+    const filteredTxs = transactions.filter(t => {
+      const time = t.createdAt ? t.createdAt.seconds * 1000 : Date.now();
+      return time > startTime.getTime();
+    });
+
+    // Replay Logic
+    let startUSDT = safeNum(inventory.usdt);
+    let startVES = safeNum(inventory.ves);
+    
+    filteredTxs.forEach(tx => {
+       if(tx.type === 'buy') {
+          startUSDT -= safeNum(tx.amountUSDT);
+          startVES += safeNum(tx.totalBS);
+       } else if (tx.type === 'sell') {
+          startUSDT += (safeNum(tx.amountUSDT) + safeNum(tx.feeUSDT));
+          startVES -= safeNum(tx.totalBS);
+       } else if (tx.type === 'swap') {
+          startUSDT += safeNum(tx.feeUSDT);
+       } else if (tx.type === 'expense') {
+          startVES += safeNum(tx.amountBS);
+       } else if (tx.type === 'capital') {
+          if(tx.currency === 'VES') startVES -= safeNum(tx.amount);
+          else startUSDT -= safeNum(tx.amount);
+       }
+    });
+
+    const valuationRate = safeNum(inventory.avgPrice) || 1;
+    const currentEquity = safeNum(inventory.usdt) + (safeNum(inventory.ves) / valuationRate);
+    const startEquity = startUSDT + (startVES / valuationRate);
+
+    const deposits = filteredTxs.filter(t => t.type === 'capital').reduce((acc, t) => {
+        const val = t.currency === 'USDT' ? safeNum(t.amount) : (safeNum(t.amount) / valuationRate);
+        return acc + val;
+    }, 0);
+
+    const realGrowthUSDT = (currentEquity - startEquity) - deposits;
+
+    const totalExpensesUSDT = filteredTxs.filter(t => t.type === 'expense').reduce((acc, t) => {
+        return acc + (t.expenseUSDT || (safeNum(t.amountBS) / valuationRate));
+    }, 0);
+
+    const byCategory = filteredTxs.filter(t => t.type === 'expense').reduce((acc, curr) => {
       const cat = curr.category || 'Otros';
-      acc[cat] = (acc[cat] || 0) + (curr.amountBS || 0);
+      const val = curr.expenseUSDT || (safeNum(curr.amountBS) / valuationRate);
+      acc[cat] = (acc[cat] || 0) + val;
       return acc;
     }, {});
 
-    const totalProfitUSDT = transactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
-    
-    // Estimación para gráfico
-    const totalProfitBS = totalProfitUSDT * 50; // Valor referencial para visualización
-
-    return { totalSpent, byCategory, totalProfitBS, totalProfitUSDT };
-  }, [transactions]);
+    return { realGrowthUSDT, totalExpensesUSDT, byCategory };
+  }, [transactions, inventory, range]);
 
   const categories = [
     { id: 'Comida', icon: <Utensils size={16}/>, color: 'text-orange-400', bar: 'bg-orange-500' },
@@ -582,38 +653,32 @@ function StatsModule({ transactions }) {
 
   return (
     <div className="space-y-6">
-      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
-        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2"><ArrowRightLeft size={16}/> Profit vs Gastos</h3>
-        <div className="flex items-end gap-2 mb-2 h-24">
-           <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
-             <span className="text-[10px] text-emerald-400 font-bold opacity-0 group-hover:opacity-100 transition-opacity">
-               ${stats.totalProfitUSDT.toFixed(0)}
-             </span>
-             <div 
-               className="w-full bg-emerald-500/20 border border-emerald-500/50 rounded-t-lg transition-all hover:bg-emerald-500/30"
-               style={{ height: `${Math.min(100, (stats.totalProfitBS / ((stats.totalProfitBS + stats.totalSpent) || 1)) * 100)}%` }}
-             ></div>
-             <p className="text-[10px] text-emerald-500 font-bold">GANADO</p>
-           </div>
-           <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
-             <span className="text-[10px] text-red-400 font-bold opacity-0 group-hover:opacity-100 transition-opacity">
-               Bs {stats.totalSpent.toLocaleString()}
-             </span>
-             <div 
-               className="w-full bg-red-500/20 border border-red-500/50 rounded-t-lg transition-all hover:bg-red-500/30"
-               style={{ height: `${Math.min(100, (stats.totalSpent / ((stats.totalProfitBS + stats.totalSpent) || 1)) * 100)}%` }}
-             ></div>
-             <p className="text-[10px] text-red-500 font-bold">GASTADO</p>
-           </div>
-        </div>
+      <div className="flex bg-slate-800 p-1 rounded-lg justify-center">
+         {['day', 'month', 'all'].map(r => (
+             <button key={r} onClick={() => setRange(r)} className={`flex-1 py-1 text-xs font-bold rounded capitalize transition-colors ${range === r ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>
+               {r === 'day' ? 'Hoy' : r === 'month' ? 'Mes' : 'Todo'}
+             </button>
+         ))}
+      </div>
+
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 text-center">
+        <p className="text-xs text-slate-400 uppercase font-bold mb-2">Crecimiento Neto (Profit Real)</p>
+        <h2 className={`text-4xl font-black ${metrics.realGrowthUSDT >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+            {metrics.realGrowthUSDT >= 0 ? '+' : ''}{metrics.realGrowthUSDT.toFixed(2)} <span className="text-sm text-slate-500">USDT</span>
+        </h2>
+        <p className="text-[10px] text-slate-500 mt-2">Base: Inventario + Caja</p>
       </div>
 
       <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
-        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2"><PieChart size={16}/> Distribución de Gastos</h3>
+        <div className="flex justify-between items-center mb-4">
+            <h3 className="text-sm font-bold text-slate-300 flex items-center gap-2"><PieChart size={16}/> Gastos (USDT)</h3>
+            <span className="text-xs font-mono text-red-400 font-bold">Total: ${metrics.totalExpensesUSDT.toFixed(2)}</span>
+        </div>
+        
         <div className="space-y-4">
           {categories.map(cat => {
-            const amount = stats.byCategory[cat.id] || 0;
-            const percent = stats.totalSpent > 0 ? (amount / stats.totalSpent) * 100 : 0;
+            const amount = metrics.byCategory[cat.id] || 0;
+            const percent = metrics.totalExpensesUSDT > 0 ? (amount / metrics.totalExpensesUSDT) * 100 : 0;
             if (amount === 0) return null;
             return (
               <div key={cat.id}>
@@ -621,7 +686,7 @@ function StatsModule({ transactions }) {
                   <span className={`flex items-center gap-2 font-bold ${cat.color}`}>
                     {cat.icon} {cat.id}
                   </span>
-                  <span className="text-slate-300">{amount.toLocaleString()} Bs</span>
+                  <span className="text-slate-300">${amount.toFixed(2)}</span>
                 </div>
                 <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden">
                   <div className={`h-full ${cat.bar}`} style={{ width: `${percent}%` }}></div>
@@ -629,7 +694,7 @@ function StatsModule({ transactions }) {
               </div>
             );
           })}
-          {stats.totalSpent === 0 && <p className="text-center text-xs text-slate-600">Aún no hay gastos registrados.</p>}
+          {metrics.totalExpensesUSDT === 0 && <p className="text-center text-xs text-slate-600">Sin gastos en este periodo.</p>}
         </div>
       </div>
     </div>
