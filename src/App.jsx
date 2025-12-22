@@ -50,7 +50,8 @@ import {
   Cross,
   Save,
   X,
-  AlertTriangle
+  AlertTriangle,
+  Info
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -93,7 +94,6 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     
-    // Safety timeout
     const safetyTimeout = setTimeout(() => setLoading(false), 5000);
 
     const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
@@ -275,6 +275,17 @@ export default function App() {
     setEditingInventory(true);
   };
 
+  const handleUpdateAvg = async (newVal) => {
+    const price = parseFloat(newVal);
+    if(price > 0) {
+      const newInv = { ...inventory, avgPrice: price };
+      setInventory(newInv);
+      const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
+      await setDoc(invRef, newInv);
+      setEditingAvg(false);
+    }
+  };
+
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
@@ -282,7 +293,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.0 - Estable</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.1 - Sync & Trace</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -356,11 +367,27 @@ export default function App() {
         ) : (
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
-              <div className="flex items-center gap-2 mb-1">
-                <Wallet size={14} className="text-emerald-400"/>
-                <span className="text-xs text-slate-400">Inventario USDT</span>
+              <div className="flex items-center gap-2 mb-1 justify-between">
+                <div className="flex items-center gap-2">
+                  <Wallet size={14} className="text-emerald-400"/>
+                  <span className="text-xs text-slate-400">Inventario USDT</span>
+                </div>
+                <button onClick={() => setEditingAvg(!editingAvg)} className="text-xs text-slate-600 hover:text-white"><Edit2 size={12}/></button>
               </div>
               <p className="text-lg font-mono font-bold text-white">{(inventory.usdt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
+              
+              {editingAvg ? (
+                 <input 
+                   autoFocus
+                   type="number" 
+                   className="w-full bg-slate-950 text-xs p-1 rounded border border-slate-600 text-white"
+                   defaultValue={inventory.avgPrice}
+                   onBlur={(e) => handleUpdateAvg(e.target.value)}
+                   onKeyDown={(e) => e.key === 'Enter' && handleUpdateAvg(e.currentTarget.value)}
+                 />
+              ) : (
+                 <p className="text-[10px] text-slate-500">Costo Prom: <span className="text-emerald-400">{(inventory.avgPrice || 0).toFixed(4)}</span></p>
+              )}
             </div>
             
             <div className="bg-slate-900 p-3 rounded-xl border border-slate-800/50">
@@ -401,7 +428,11 @@ function Dashboard({ transactions, onDelete }) {
   const todayStats = useMemo(() => {
     const startOfDay = new Date();
     startOfDay.setHours(0,0,0,0);
-    const todays = transactions.filter(t => (t.createdAt?.seconds * 1000) > startOfDay.getTime());
+    // V3.1: Incluir transacciones con createdAt null (pendientes de server) como 'ahora'
+    const todays = transactions.filter(t => {
+      const txTime = t.createdAt ? t.createdAt.seconds * 1000 : Date.now();
+      return txTime > startOfDay.getTime();
+    });
     
     const sold = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.totalBS || 0), 0);
     const profit = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
@@ -454,12 +485,20 @@ function Dashboard({ transactions, onDelete }) {
                    tx.type === 'capital' ? 'Fondeo' :
                    tx.type === 'swap' ? 'Swap / Transfer' : 'Gasto'}
                 </p>
-                <p className="text-[10px] text-slate-500">
-                  {tx.type === 'swap' ? `Fee: ${(tx.feeUSDT || 0)} USDT` :
-                   tx.type === 'capital' ? `${tx.currency || 'N/A'}` :
-                   tx.type === 'expense' ? (tx.description || 'Sin nota') :
-                   `@ ${(tx.rate || 0)} • ${tx.exchange || '-'}`}
-                </p>
+                {/* V3.1: Transparencia de Costos */}
+                <div className="flex flex-col">
+                  <p className="text-[10px] text-slate-500">
+                    {tx.type === 'swap' ? `Fee: ${(tx.feeUSDT || 0)} USDT` :
+                     tx.type === 'capital' ? `${tx.currency || 'N/A'}` :
+                     tx.type === 'expense' ? (tx.description || 'Sin nota') :
+                     `@ ${(tx.rate || 0)} • ${tx.exchange || '-'}`}
+                  </p>
+                  {tx.type === 'sell' && tx.avgPriceAtMoment && (
+                    <p className="text-[9px] text-slate-600 flex items-center gap-1">
+                      <Info size={8}/> Costo Base: {tx.avgPriceAtMoment.toFixed(2)}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
             
@@ -471,6 +510,11 @@ function Dashboard({ transactions, onDelete }) {
                    tx.type === 'swap' ? `-$${(tx.feeUSDT || 0)}` :
                    `$${(tx.amountUSDT || 0).toFixed(2)}`}
                 </p>
+                {tx.profitUSDT !== undefined && (
+                  <p className={`text-[10px] ${tx.profitUSDT > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                    {tx.profitUSDT.toFixed(2)} PnL
+                  </p>
+                )}
               </div>
               <button onClick={() => onDelete(tx)} className="p-2 text-slate-700 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
             </div>
