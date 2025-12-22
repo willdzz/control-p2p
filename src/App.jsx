@@ -38,7 +38,16 @@ import {
   Trash2,
   RefreshCw,
   Edit2,
-  Calendar
+  Calendar,
+  PieChart,
+  ShoppingBag,
+  Utensils,
+  Zap,
+  Shirt,
+  Heart,
+  Car,
+  HelpCircle,
+  Cross
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -64,7 +73,7 @@ export default function App() {
   const [inventory, setInventory] = useState({ usdt: 0, ves: 0, avgPrice: 0 });
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [editingAvg, setEditingAvg] = useState(false); // Estado para editar promedio
+  const [editingAvg, setEditingAvg] = useState(false);
 
   // Auth Listener
   useEffect(() => {
@@ -87,8 +96,17 @@ export default function App() {
 
     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
     const unsubInv = onSnapshot(docRef, (snap) => {
-      if (snap.exists()) setInventory(snap.data());
-      else setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
+      if (snap.exists()) {
+        const data = snap.data();
+        // BLINDAJE CONTRA NaN: Si viene corrupto, usamos 0
+        setInventory({
+          usdt: parseFloat(data.usdt) || 0,
+          ves: parseFloat(data.ves) || 0,
+          avgPrice: parseFloat(data.avgPrice) || 0
+        });
+      } else {
+        setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
+      }
       setLoading(false);
     });
 
@@ -104,15 +122,19 @@ export default function App() {
   const appId = 'p2p-v2-production';
 
   const handleTrade = async (data) => {
-    let newInv = { ...inventory };
+    // PROTECCIÓN DE SALDOS: Asegurar que operamos sobre números
+    let newInv = { 
+      usdt: parseFloat(inventory.usdt) || 0,
+      ves: parseFloat(inventory.ves) || 0,
+      avgPrice: parseFloat(inventory.avgPrice) || 0
+    };
     let profit = 0;
 
     if (data.type === 'buy') {
-      // COMPRA: Costo = (USDT * Tasa) + Comisión Banco (si aplica)
       const totalCostOld = newInv.usdt * newInv.avgPrice;
-      const costNew = data.totalBS; // Este monto ya incluye fee bancario si se marcó
+      const costNew = data.totalBS; 
       
-      const totalUSDT = newInv.usdt + data.amountUSDT; // En compra P2P recibes el USDT neto
+      const totalUSDT = newInv.usdt + data.amountUSDT; 
       const totalCost = totalCostOld + costNew;
       
       newInv.avgPrice = totalUSDT > 0 ? totalCost / totalUSDT : 0;
@@ -120,22 +142,18 @@ export default function App() {
       newInv.ves -= costNew;
 
     } else if (data.type === 'sell') {
-      // VENTA: Revenue = Total Bs Recibidos
       const revenueVES = data.totalBS; 
       const costOfSold = data.amountUSDT * newInv.avgPrice;
       
       profit = revenueVES - costOfSold;
       data.profitUSDT = data.rate > 0 ? profit / data.rate : 0;
 
-      // Restamos el USDT vendido + la comisión del exchange (ej. 0.06 o 0.2%)
       newInv.usdt -= (data.amountUSDT + (data.feeUSDT || 0));
       newInv.ves += revenueVES;
     
     } else if (data.type === 'swap') {
-      // SWAP: Solo resta fee de USDT, no toca Bs. Sube el precio promedio.
-      // Ejemplo: Muevo 100, pago 1 de fee. Tengo 99, pero me costaron lo mismo que los 100.
       const fee = data.feeUSDT || 0;
-      const totalCost = newInv.usdt * newInv.avgPrice; // El costo total en Bs se mantiene
+      const totalCost = newInv.usdt * newInv.avgPrice;
       const newTotalUSDT = newInv.usdt - fee;
 
       newInv.usdt = newTotalUSDT;
@@ -171,12 +189,16 @@ export default function App() {
 
   const handleDeleteTransaction = async (tx) => {
     if(!confirm("¿Borrar transacción y revertir saldos?")) return;
-    let newInv = { ...inventory };
+    
+    // PROTECCIÓN DE SALDOS EN REVERSO
+    let newInv = { 
+      usdt: parseFloat(inventory.usdt) || 0,
+      ves: parseFloat(inventory.ves) || 0,
+      avgPrice: parseFloat(inventory.avgPrice) || 0
+    };
 
-    // Lógica inversa simplificada para V2.4
     if (tx.type === 'buy') {
-      // Devolver Bs (Costo total reportado), Restar USDT
-      const totalCost = tx.totalBS; // Usamos el totalBS guardado que incluye fees
+      const totalCost = tx.totalBS; 
       const currentTotalVal = newInv.usdt * newInv.avgPrice;
       const prevTotalVal = currentTotalVal - totalCost;
       const prevUSDT = newInv.usdt - tx.amountUSDT;
@@ -186,15 +208,13 @@ export default function App() {
       newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
 
     } else if (tx.type === 'sell') {
-      // Devolver USDT (Monto + Fee), Restar Bs
       const totalUSDTBack = tx.amountUSDT + (tx.feeUSDT || 0);
       newInv.usdt += totalUSDTBack;
       newInv.ves -= tx.totalBS;
 
     } else if (tx.type === 'swap') {
-      // Devolver Fee USDT
       const fee = tx.feeUSDT || 0;
-      const currentTotalVal = newInv.usdt * newInv.avgPrice; // Costo total (no cambió en swap)
+      const currentTotalVal = newInv.usdt * newInv.avgPrice;
       const prevUSDT = newInv.usdt + fee;
       newInv.usdt = prevUSDT;
       newInv.avgPrice = prevUSDT > 0 ? currentTotalVal / prevUSDT : 0;
@@ -230,7 +250,6 @@ export default function App() {
     }
   };
 
-
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center">
@@ -238,7 +257,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V2.4 - Precisión decimal y control de fees.</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V2.5 - Estadísticas y Categorías de Gasto.</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -253,7 +272,7 @@ export default function App() {
   if (loading) return <div className="h-screen bg-slate-950 flex items-center justify-center text-emerald-500">Cargando datos...</div>;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-20 max-w-md mx-auto relative">
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-24 max-w-md mx-auto relative">
       
       {/* HEADER */}
       <div className="bg-gradient-to-b from-slate-900 to-slate-950 p-6 border-b border-slate-800">
@@ -262,7 +281,7 @@ export default function App() {
             <h2 className="text-xs text-slate-400 font-semibold tracking-wider uppercase">Patrimonio Neto</h2>
             <div className="flex items-baseline gap-2">
               <span className="text-3xl font-bold text-white">
-                $ {(inventory.usdt + (inventory.ves / (inventory.avgPrice || 1))).toFixed(2)}
+                $ {((inventory.usdt || 0) + ((inventory.ves || 0) / (inventory.avgPrice || 1))).toFixed(2)}
               </span>
               <span className="text-xs text-slate-500">USDT (Est.)</span>
             </div>
@@ -279,7 +298,7 @@ export default function App() {
               </div>
               <button onClick={() => setEditingAvg(!editingAvg)} className="text-xs text-slate-600 hover:text-white"><Edit2 size={12}/></button>
             </div>
-            <p className="text-lg font-mono font-bold text-white">{inventory.usdt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
+            <p className="text-lg font-mono font-bold text-white">{(inventory.usdt || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</p>
             
             {editingAvg ? (
                <input 
@@ -291,7 +310,7 @@ export default function App() {
                  onKeyDown={(e) => e.key === 'Enter' && handleUpdateAvg(e.currentTarget.value)}
                />
             ) : (
-               <p className="text-[10px] text-slate-500">Costo Prom: <span className="text-emerald-400">{inventory.avgPrice.toFixed(4)}</span></p>
+               <p className="text-[10px] text-slate-500">Costo Prom: <span className="text-emerald-400">{(inventory.avgPrice || 0).toFixed(4)}</span></p>
             )}
           </div>
           
@@ -300,7 +319,8 @@ export default function App() {
               <Landmark size={14} className="text-blue-400"/>
               <span className="text-xs text-slate-400">Liquidez VES</span>
             </div>
-            <p className="text-lg font-mono font-bold text-white">{inventory.ves.toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
+            {/* AQUÍ SE MUESTRA EL SALDO VES REPARADO */}
+            <p className="text-lg font-mono font-bold text-white">{(inventory.ves || 0).toLocaleString('es-VE', { minimumFractionDigits: 2 })}</p>
             <p className="text-[10px] text-slate-500">Bs Disponibles</p>
           </div>
         </div>
@@ -310,14 +330,16 @@ export default function App() {
       <div className="p-4">
         {view === 'dashboard' && <Dashboard transactions={transactions} onDelete={handleDeleteTransaction} />}
         {view === 'trade' && <TradeForm onTrade={handleTrade} onCancel={() => setView('dashboard')} avgPrice={inventory.avgPrice} />}
+        {view === 'stats' && <StatsModule transactions={transactions} />}
         {view === 'loans' && <LoansModule loans={loans} user={user} db={db} appId={'p2p-v2-production'} />}
         {view === 'calculator' && <ArbitrageCalc />}
       </div>
 
       {/* NAV */}
-      <div className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur border-t border-slate-800 flex justify-around p-3 max-w-md mx-auto">
+      <div className="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur border-t border-slate-800 flex justify-around p-3 max-w-md mx-auto z-50">
         <NavButton icon={<TrendingUp/>} label="Operar" active={view === 'trade'} onClick={() => setView('trade')} />
         <NavButton icon={<History/>} label="Historial" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
+        <NavButton icon={<PieChart/>} label="Stats" active={view === 'stats'} onClick={() => setView('stats')} />
         <NavButton icon={<Users/>} label="Deudas" active={view === 'loans'} onClick={() => setView('loans')} />
         <NavButton icon={<Calculator/>} label="Calc" active={view === 'calculator'} onClick={() => setView('calculator')} />
       </div>
@@ -328,24 +350,19 @@ export default function App() {
 // --- MÓDULOS DE INTERFAZ ---
 
 function Dashboard({ transactions, onDelete }) {
-  // Estadísticas del día (V2.4)
   const todayStats = useMemo(() => {
     const startOfDay = new Date();
     startOfDay.setHours(0,0,0,0);
-    
     const todays = transactions.filter(t => t.createdAt?.seconds * 1000 > startOfDay.getTime());
-    
     const sold = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + curr.totalBS, 0);
     const profit = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
     const spent = todays.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amountBS, 0);
-
     return { count: todays.length, sold, profit, spent };
   }, [transactions]);
 
   return (
-    <div className="space-y-4 pb-20">
-      
-      {/* Resumen Diario (Nuevo V2.4) */}
+    <div className="space-y-4">
+      {/* Resumen Diario */}
       <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex justify-between items-center">
         <div>
           <p className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1"><Calendar size={10}/> Resumen Hoy</p>
@@ -366,7 +383,7 @@ function Dashboard({ transactions, onDelete }) {
         <p className="text-slate-600 text-center py-10">Sin movimientos.</p>
       ) : (
         transactions.map(tx => (
-          <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group">
+          <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
             <div className="flex items-center gap-3">
               <div className={`p-2 rounded-full ${
                 tx.type === 'sell' ? 'bg-emerald-500/20 text-emerald-400' : 
@@ -383,16 +400,17 @@ function Dashboard({ transactions, onDelete }) {
               </div>
               <div>
                 <p className="font-bold text-sm text-slate-200">
-                  {tx.type === 'sell' ? 'Venta USDT' : 
+                  {tx.type === 'expense' && tx.category ? tx.category :
+                   tx.type === 'sell' ? 'Venta USDT' : 
                    tx.type === 'buy' ? 'Compra USDT' : 
                    tx.type === 'capital' ? 'Fondeo' :
-                   tx.type === 'swap' ? 'Swap / Transfer' :
-                   tx.description || 'Gasto'}
+                   tx.type === 'swap' ? 'Swap / Transfer' : 'Gasto'}
                 </p>
                 <p className="text-[10px] text-slate-500">
                   {tx.type === 'swap' ? `Fee: ${tx.feeUSDT} USDT` :
                    tx.type === 'capital' ? `${tx.currency}` :
-                   tx.type !== 'expense' ? `@ ${tx.rate} • ${tx.exchange}` : 'Personal'}
+                   tx.type === 'expense' ? (tx.description || 'Sin nota') :
+                   `@ ${tx.rate} • ${tx.exchange}`}
                 </p>
               </div>
             </div>
@@ -405,18 +423,8 @@ function Dashboard({ transactions, onDelete }) {
                    tx.type === 'swap' ? `-$${tx.feeUSDT}` :
                    `$${tx.amountUSDT.toFixed(2)}`}
                 </p>
-                {tx.profitUSDT !== undefined && (
-                  <p className={`text-[10px] ${tx.profitUSDT > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                    {tx.profitUSDT.toFixed(2)} PnL
-                  </p>
-                )}
               </div>
-              <button 
-                onClick={() => onDelete(tx)}
-                className="p-2 text-slate-700 hover:text-red-500 transition-colors"
-              >
-                <Trash2 size={14} />
-              </button>
+              <button onClick={() => onDelete(tx)} className="p-2 text-slate-700 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
             </div>
           </div>
         ))
@@ -425,61 +433,152 @@ function Dashboard({ transactions, onDelete }) {
   );
 }
 
+function StatsModule({ transactions }) {
+  const stats = useMemo(() => {
+    // 1. Filtrar solo gastos
+    const expenses = transactions.filter(t => t.type === 'expense');
+    const totalSpent = expenses.reduce((acc, curr) => acc + curr.amountBS, 0);
+
+    // 2. Agrupar por categoría
+    const byCategory = expenses.reduce((acc, curr) => {
+      const cat = curr.category || 'Otros';
+      acc[cat] = (acc[cat] || 0) + curr.amountBS;
+      return acc;
+    }, {});
+
+    // 3. Profit Total Histórico
+    const totalProfitUSDT = transactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
+    
+    // Estimado Profit en Bs (Usando tasa promedio de ventas reciente o referencial)
+    // Para simplificar la comparación visual, usaremos una tasa promedio implícita de las ventas
+    const sells = transactions.filter(t => t.type === 'sell');
+    const avgSellRate = sells.length > 0 ? (sells.reduce((acc, t) => acc + t.rate, 0) / sells.length) : 0;
+    const totalProfitBS = totalProfitUSDT * avgSellRate;
+
+    return { totalSpent, byCategory, totalProfitBS, totalProfitUSDT };
+  }, [transactions]);
+
+  const categories = [
+    { id: 'Comida', icon: <Utensils size={16}/>, color: 'text-orange-400', bar: 'bg-orange-500' },
+    { id: 'Servicios', icon: <Zap size={16}/>, color: 'text-yellow-400', bar: 'bg-yellow-500' },
+    { id: 'Ropa', icon: <Shirt size={16}/>, color: 'text-pink-400', bar: 'bg-pink-500' },
+    { id: 'Diezmo', icon: <Heart size={16}/>, color: 'text-red-400', bar: 'bg-red-500' },
+    { id: 'Transporte', icon: <Car size={16}/>, color: 'text-blue-400', bar: 'bg-blue-500' },
+    { id: 'Salud', icon: <Cross size={16}/>, color: 'text-emerald-400', bar: 'bg-emerald-500' },
+    { id: 'Otros', icon: <HelpCircle size={16}/>, color: 'text-slate-400', bar: 'bg-slate-500' },
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* Tarjeta VS */}
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
+        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2"><ArrowRightLeft size={16}/> Profit vs Gastos</h3>
+        
+        <div className="flex items-end gap-2 mb-2 h-24">
+           {/* Barra Profit */}
+           <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
+             <span className="text-[10px] text-emerald-400 font-bold opacity-0 group-hover:opacity-100 transition-opacity">
+               ${stats.totalProfitUSDT.toFixed(0)}
+             </span>
+             <div 
+               className="w-full bg-emerald-500/20 border border-emerald-500/50 rounded-t-lg transition-all hover:bg-emerald-500/30"
+               style={{ height: `${Math.min(100, (stats.totalProfitBS / (stats.totalProfitBS + stats.totalSpent)) * 100)}%` }}
+             ></div>
+             <p className="text-[10px] text-emerald-500 font-bold">GANADO</p>
+           </div>
+           
+           {/* Barra Gastos */}
+           <div className="flex-1 flex flex-col justify-end items-center gap-1 group">
+             <span className="text-[10px] text-red-400 font-bold opacity-0 group-hover:opacity-100 transition-opacity">
+               Bs {stats.totalSpent.toLocaleString()}
+             </span>
+             <div 
+               className="w-full bg-red-500/20 border border-red-500/50 rounded-t-lg transition-all hover:bg-red-500/30"
+               style={{ height: `${Math.min(100, (stats.totalSpent / (stats.totalProfitBS + stats.totalSpent)) * 100)}%` }}
+             ></div>
+             <p className="text-[10px] text-red-500 font-bold">GASTADO</p>
+           </div>
+        </div>
+        <p className="text-center text-[10px] text-slate-500">Comparativa histórica global</p>
+      </div>
+
+      {/* Desglose por Categoría */}
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
+        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2"><PieChart size={16}/> Distribución de Gastos</h3>
+        
+        <div className="space-y-4">
+          {categories.map(cat => {
+            const amount = stats.byCategory[cat.id] || 0;
+            const percent = stats.totalSpent > 0 ? (amount / stats.totalSpent) * 100 : 0;
+            
+            if (amount === 0) return null;
+
+            return (
+              <div key={cat.id}>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className={`flex items-center gap-2 font-bold ${cat.color}`}>
+                    {cat.icon} {cat.id}
+                  </span>
+                  <span className="text-slate-300">{amount.toLocaleString()} Bs</span>
+                </div>
+                <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden">
+                  <div className={`h-full ${cat.bar}`} style={{ width: `${percent}%` }}></div>
+                </div>
+              </div>
+            );
+          })}
+          {stats.totalSpent === 0 && <p className="text-center text-xs text-slate-600">Aún no hay gastos registrados.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TradeForm({ onTrade, onCancel, avgPrice }) {
-  const [mode, setMode] = useState('sell'); // sell, buy, swap, expense, capital
+  const [mode, setMode] = useState('sell');
   const [exchange, setExchange] = useState('Binance');
-  
-  // Inputs Dinámicos
-  const [inputVal, setInputVal] = useState(''); // Puede ser USDT o VES dependiendo del modo
+  const [inputVal, setInputVal] = useState('');
   const [rate, setRate] = useState('');
-  
-  // Fees V2.4
-  const [bankFee, setBankFee] = useState(false); // Para compras (0.3%)
-  const [exchangeFeeType, setExchangeFeeType] = useState('none'); // none, std, merchant, airtm
-  
-  // Swap Inputs
+  const [bankFee, setBankFee] = useState(false);
+  const [exchangeFeeType, setExchangeFeeType] = useState('none');
   const [swapFee, setSwapFee] = useState('');
-
-  // Capital Inputs
   const [capCurrency, setCapCurrency] = useState('VES');
-
-  // Lógica de Cálculo Inverso
-  // Si es VENTA: El inputVal es BOLIVARES. Calculamos USDT.
-  // Si es COMPRA: El inputVal es USDT. Calculamos Bolívares.
   
+  // V2.5 Categorías Gasto
+  const [expenseCategory, setExpenseCategory] = useState('Comida');
+  const [expenseNote, setExpenseNote] = useState('');
+
   const valInput = parseFloat(inputVal) || 0;
   const valRate = parseFloat(rate) || 0;
 
-  // Cálculos preliminares
   let calcUSDT = 0;
   let calcBS = 0;
   let feeUSDT_Calculated = 0;
   let feeBS_Calculated = 0;
 
   if (mode === 'buy') {
-    // COMPRA: Input es USDT
     calcUSDT = valInput;
     calcBS = valInput * valRate;
     if (bankFee) {
         feeBS_Calculated = calcBS * 0.003;
-        calcBS += feeBS_Calculated; // Pagas más
+        calcBS += feeBS_Calculated;
     }
-
   } else if (mode === 'sell') {
-    // VENTA (V2.4): Input es VES (Lo que recibí en el banco)
-    calcBS = valInput; // Total recibido
-    // Cálculo inverso: ¿Cuántos USDT vendí para recibir esos Bs?
+    calcBS = valInput;
     calcUSDT = valRate > 0 ? valInput / valRate : 0;
-    
-    // Calcular Fee Exchange (Se resta de mi inventario USDT)
-    if (exchangeFeeType === 'std') feeUSDT_Calculated = 0.06; // Binance Taker aprox
-    else if (exchangeFeeType === 'merchant') feeUSDT_Calculated = calcUSDT * 0.002; // 0.2%
-    else if (exchangeFeeType === 'airtm') feeUSDT_Calculated = calcUSDT * 0.0071; // 0.71% aprox
+    if (exchangeFeeType === 'std') feeUSDT_Calculated = 0.06;
+    else if (exchangeFeeType === 'merchant') feeUSDT_Calculated = calcUSDT * 0.002;
+    else if (exchangeFeeType === 'airtm') feeUSDT_Calculated = calcUSDT * 0.0071;
   }
 
   const handleSubmit = () => {
     if (mode === 'expense') {
-      onTrade({ type: 'expense', amountBS: valInput, description: rate });
+      onTrade({ 
+        type: 'expense', 
+        amountBS: valInput, 
+        category: expenseCategory,
+        description: expenseNote 
+      });
       return;
     }
     if (mode === 'swap') {
@@ -496,18 +595,26 @@ function TradeForm({ onTrade, onCancel, avgPrice }) {
       });
       return;
     }
-
-    // Trade Standard
     onTrade({
       type: mode,
-      amountUSDT: calcUSDT, // Siempre mandamos el USDT calculado exacto
-      totalBS: calcBS,     // El total en Bs impactado en caja
+      amountUSDT: calcUSDT,
+      totalBS: calcBS,
       rate: valRate,
       feeBS: feeBS_Calculated,
       feeUSDT: feeUSDT_Calculated,
       exchange
     });
   };
+
+  const categories = [
+    { id: 'Comida', icon: <Utensils size={16}/> },
+    { id: 'Servicios', icon: <Zap size={16}/> },
+    { id: 'Ropa', icon: <Shirt size={16}/> },
+    { id: 'Diezmo', icon: <Heart size={16}/> },
+    { id: 'Transporte', icon: <Car size={16}/> },
+    { id: 'Salud', icon: <Cross size={16}/> },
+    { id: 'Otros', icon: <HelpCircle size={16}/> },
+  ];
 
   return (
     <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in slide-in-from-bottom-8">
@@ -532,7 +639,6 @@ function TradeForm({ onTrade, onCancel, avgPrice }) {
         ))}
       </div>
 
-      {/* Formulario Dinámico */}
       <div className="space-y-4">
         
         {/* INPUT PRINCIPAL */}
@@ -552,15 +658,34 @@ function TradeForm({ onTrade, onCancel, avgPrice }) {
             className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 font-mono text-lg" 
             placeholder="0.00"
           />
-          {/* Subtítulo informativo */}
-          {mode === 'sell' && valRate > 0 && valInput > 0 && (
-            <p className="text-[10px] text-emerald-400 mt-1 text-right">
-              Equivale a: <span className="font-mono font-bold">{(valInput / valRate).toFixed(6)} USDT</span>
-            </p>
-          )}
         </div>
 
-        {/* CAMPO TASA / FEE */}
+        {/* SELECTOR DE CATEGORÍAS (SOLO MODO GASTO) */}
+        {mode === 'expense' && (
+          <div className="space-y-3">
+            <label className="text-[10px] text-slate-400 uppercase font-bold">Categoría</label>
+            <div className="grid grid-cols-3 gap-2">
+               {categories.map(cat => (
+                 <button 
+                   key={cat.id} 
+                   onClick={() => setExpenseCategory(cat.id)}
+                   className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs font-bold transition-all ${
+                     expenseCategory === cat.id ? 'bg-red-600 border-red-500 text-white' : 'bg-slate-950 border-slate-700 text-slate-500'
+                   }`}
+                 >
+                   {cat.icon}
+                   {cat.id}
+                 </button>
+               ))}
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase font-bold">Nota (Opcional)</label>
+              <input type="text" value={expenseNote} onChange={e => setExpenseNote(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none" placeholder="Ej: Pizza"/>
+            </div>
+          </div>
+        )}
+
+        {/* TASA (NO EN GASTO NI SWAP) */}
         {mode !== 'expense' && mode !== 'swap' && (
           <div>
             {mode === 'capital' && capCurrency === 'VES' ? null : (
@@ -581,14 +706,11 @@ function TradeForm({ onTrade, onCancel, avgPrice }) {
           </div>
         )}
 
-        {/* EXTRAS SEGÚN MODO */}
-        
         {/* SWAP EXTRAS */}
         {mode === 'swap' && (
            <div>
              <label className="text-[10px] text-slate-400 uppercase font-bold">Comisión Pagada (USDT)</label>
              <input type="number" value={swapFee} onChange={e => setSwapFee(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-orange-500" placeholder="Ej: 1.00"/>
-             <p className="text-[10px] text-slate-500 mt-1">Este monto se restará de tu inventario como gasto operativo.</p>
            </div>
         )}
 
@@ -637,7 +759,6 @@ function TradeForm({ onTrade, onCancel, avgPrice }) {
 
       </div>
 
-      {/* BOTONES ACCIÓN */}
       <div className="flex gap-3 mt-6">
         <button onClick={onCancel} className="flex-1 py-3 bg-slate-800 rounded-lg text-slate-400 text-sm font-bold hover:bg-slate-700">Cancelar</button>
         <button onClick={handleSubmit} className={`flex-1 py-3 rounded-lg text-white font-bold text-sm shadow-lg ${
