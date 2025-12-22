@@ -19,7 +19,8 @@ import {
   doc, 
   setDoc,
   where,
-  Timestamp
+  Timestamp,
+  getDocs // Importación clave para el borrado profundo
 } from 'firebase/firestore';
 import { 
   ArrowRightLeft, 
@@ -69,10 +70,19 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
-// --- UTILIDAD DE SEGURIDAD (ANTI-CRASH) ---
+// --- UTILIDAD DE SEGURIDAD ---
 const safeNum = (val) => {
   const num = parseFloat(val);
   return isNaN(num) ? 0 : num;
+};
+
+const safeDate = (timestamp) => {
+  if (!timestamp || !timestamp.seconds) return 'Pendiente';
+  try {
+    return new Date(timestamp.seconds * 1000).toLocaleDateString();
+  } catch (e) {
+    return 'Fecha Inválida';
+  }
 };
 
 // --- COMPONENTE PRINCIPAL ---
@@ -143,8 +153,6 @@ export default function App() {
   // --- LÓGICA DE NEGOCIO ---
   const handleTrade = async (data) => {
     let newInv = { ...inventory };
-    
-    // Asegurar números
     newInv.usdt = safeNum(newInv.usdt);
     newInv.ves = safeNum(newInv.ves);
     newInv.avgPrice = safeNum(newInv.avgPrice);
@@ -159,7 +167,6 @@ export default function App() {
       newInv.ves -= costNew;
     } else if (data.type === 'sell') {
       const revenueVES = safeNum(data.totalBS); 
-      // Profit se guarda, pero no afecta inventario directo (solo ves/usdt)
       newInv.usdt -= (safeNum(data.amountUSDT) + safeNum(data.feeUSDT));
       newInv.ves += revenueVES;
     } else if (data.type === 'swap') {
@@ -182,7 +189,6 @@ export default function App() {
       }
     }
 
-    // Calcular Profit para historial (no afecta inventario, es metadata)
     if (data.type === 'sell') {
         const costOfSold = safeNum(data.amountUSDT) * inventory.avgPrice;
         const profitBS = safeNum(data.totalBS) - costOfSold;
@@ -244,28 +250,35 @@ export default function App() {
     await setDoc(invRef, newInv);
   };
 
+  // --- V3.6: LOGICA DE RESETEO PROFUNDO (Direct Fetch) ---
   const handleResetApp = async () => {
-    if (!confirm("⚠️ RESET TOTAL: ¿Borrar todo?")) return;
+    if (!confirm("⚠️ MODO DEEP CLEAN: Se buscarán y eliminarán todos los datos directamente del servidor. ¿Continuar?")) return;
     setLoading(true);
     try {
+        // 1. Resetear Inventario
         const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
         await setDoc(invRef, { usdt: 0, ves: 0, avgPrice: 0 });
 
-        const deleteTxPromises = transactions.map(tx => 
-        deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id))
-        );
-        const deleteLoanPromises = loans.map(l => 
-        deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', l.id))
-        );
-        await Promise.all([...deleteTxPromises, ...deleteLoanPromises]);
+        // 2. Buscar y Borrar Transacciones (Fetch directo)
+        const txCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'transactions');
+        const txSnapshot = await getDocs(txCollection);
+        const txDeletePromises = txSnapshot.docs.map(doc => deleteDoc(doc.ref));
+
+        // 3. Buscar y Borrar Préstamos (Fetch directo)
+        const loansCollection = collection(db, 'artifacts', appId, 'users', user.uid, 'loans');
+        const loansSnapshot = await getDocs(loansCollection);
+        const loansDeletePromises = loansSnapshot.docs.map(doc => deleteDoc(doc.ref));
+
+        await Promise.all([...txDeletePromises, ...loansDeletePromises]);
         
+        // Reset local states
         setTransactions([]);
         setLoans([]);
         setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
-        setEditingInventory(false);
-        alert("Reiniciado.");
+        
+        alert(`LIMPIEZA COMPLETADA.\n\nSe eliminaron:\n- ${txSnapshot.size} transacciones\n- ${loansSnapshot.size} préstamos\n\nAhora es seguro desactivar el Modo Seguro.`);
     } catch (e) {
-        alert("Error: " + e.message);
+        alert("Error crítico al limpiar: " + e.message);
     }
     setLoading(false);
   };
@@ -309,7 +322,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.4 - Anti-Crash</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.6 - Deep Clean</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -359,8 +372,11 @@ export default function App() {
                     <AlertTriangle className="text-red-500 shrink-0" size={24}/>
                     <div>
                         <h3 className="text-sm font-bold text-white mb-1">Modo Recuperación</h3>
+                        <p className="text-xs text-slate-300 mb-3">
+                            Si la app fallaba, usa este botón para limpiar todos los datos directamente del servidor.
+                        </p>
                         <button onClick={handleResetApp} className="bg-red-600 text-white px-4 py-3 rounded-lg text-xs font-bold w-full hover:bg-red-500 mb-3 shadow-lg shadow-red-900/20">
-                            BORRAR TODO Y REINICIAR
+                            BORRAR TODO Y REINICIAR (DEEP CLEAN)
                         </button>
                         <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer p-2 border border-slate-700 rounded hover:bg-slate-800">
                             <input type="checkbox" checked={!safeMode} onChange={() => setSafeMode(false)} className="accent-blue-500"/>
@@ -469,17 +485,22 @@ function Dashboard({ transactions, onDelete }) {
     const startOfDay = new Date();
     startOfDay.setHours(0,0,0,0);
     const todays = transactions.filter(t => {
-      // V3.4: Protección extrema para fechas
-      if (!t.createdAt) return true; // Si no hay fecha (pendiente), es hoy
+      // FIX V3.5: Verificación segura de fecha
+      if (!t.createdAt) return true; 
       return (t.createdAt.seconds * 1000) > startOfDay.getTime();
     });
     
-    // V3.4: Uso de safeNum en todos los reduces
-    const sold = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + safeNum(curr.totalBS), 0);
-    const profit = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + safeNum(curr.profitUSDT), 0);
-    const spent = todays.filter(t => t.type === 'expense').reduce((acc, curr) => acc + safeNum(curr.amountBS), 0);
-    return { count: todays.length, sold, profit, spent };
+    // Filtro adicional: Evitar transacciones fantasma o corruptas
+    const validTransactions = todays.filter(t => t && t.type);
+
+    const sold = validTransactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + safeNum(curr.totalBS), 0);
+    const profit = validTransactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + safeNum(curr.profitUSDT), 0);
+    const spent = validTransactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + safeNum(curr.amountBS), 0);
+    return { count: validTransactions.length, sold, profit, spent };
   }, [transactions]);
+
+  // Filtrado final para la lista visual
+  const safeTransactions = transactions.filter(tx => tx && tx.type);
 
   return (
     <div className="space-y-4 pb-20">
@@ -499,10 +520,10 @@ function Dashboard({ transactions, onDelete }) {
       </div>
 
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Historial</h3>
-      {transactions.length === 0 ? (
+      {safeTransactions.length === 0 ? (
         <p className="text-slate-600 text-center py-10">Sin movimientos.</p>
       ) : (
-        transactions.map(tx => (
+        safeTransactions.map(tx => (
           <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
             <div className="flex items-center gap-3">
               <div className={`p-2 rounded-full ${
@@ -550,7 +571,6 @@ function Dashboard({ transactions, onDelete }) {
                    tx.type === 'swap' ? `-$${safeNum(tx.feeUSDT)}` :
                    `$${safeNum(tx.amountUSDT).toFixed(2)}`}
                 </p>
-                {/* V3.4: Verificación estricta antes de renderizar profit */}
                 {(tx.type === 'sell') && (
                   <p className={`text-[10px] ${safeNum(tx.profitUSDT) > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
                     {safeNum(tx.profitUSDT).toFixed(2)} PnL
@@ -568,7 +588,10 @@ function Dashboard({ transactions, onDelete }) {
 
 function StatsModule({ transactions }) {
   const stats = useMemo(() => {
-    const expenses = transactions.filter(t => t.type === 'expense');
+    // Protección de filtro
+    const validTxs = transactions.filter(t => t && t.type);
+
+    const expenses = validTxs.filter(t => t.type === 'expense');
     const totalSpent = expenses.reduce((acc, curr) => acc + safeNum(curr.amountBS), 0);
 
     const byCategory = expenses.reduce((acc, curr) => {
@@ -577,10 +600,12 @@ function StatsModule({ transactions }) {
       return acc;
     }, {});
 
-    const totalProfitUSDT = transactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + safeNum(curr.profitUSDT), 0);
+    const totalProfitUSDT = validTxs.filter(t => t.type === 'sell').reduce((acc, curr) => acc + safeNum(curr.profitUSDT), 0);
     
-    // Estimación para gráfico
-    const totalProfitBS = totalProfitUSDT * (safeNum(transactions[0]?.rate) || 50); 
+    // FIX V3.5: Safe rate
+    const sells = validTxs.filter(t => t.type === 'sell');
+    const avgSellRate = sells.length > 0 ? (sells.reduce((acc, t) => acc + safeNum(t.rate), 0) / sells.length) : 0;
+    const totalProfitBS = totalProfitUSDT * avgSellRate;
 
     return { totalSpent, byCategory, totalProfitBS, totalProfitUSDT };
   }, [transactions]);
