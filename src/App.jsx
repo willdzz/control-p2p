@@ -97,9 +97,14 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
+    // Timeout de seguridad por si Firebase falla
+    const safetyTimeout = setTimeout(() => setLoading(false), 5000);
+
     const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
     const unsubTx = onSnapshot(qTx, (snap) => {
       setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (error) => {
+      console.error("Error fetching tx:", error);
     });
 
     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
@@ -115,6 +120,10 @@ export default function App() {
         setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
       }
       setLoading(false);
+      clearTimeout(safetyTimeout);
+    }, (error) => {
+      console.error("Error fetching inv:", error);
+      setLoading(false);
     });
 
     const qLoans = query(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), orderBy('createdAt', 'desc'));
@@ -122,7 +131,7 @@ export default function App() {
       setLoans(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
-    return () => { unsubTx(); unsubInv(); unsubLoans(); };
+    return () => { unsubTx(); unsubInv(); unsubLoans(); clearTimeout(safetyTimeout); };
   }, [user]);
 
   // --- LÓGICA DE NEGOCIO ---
@@ -202,7 +211,7 @@ export default function App() {
     };
 
     if (tx.type === 'buy') {
-      const totalCost = tx.totalBS; 
+      const totalCost = tx.totalBS || (tx.amountUSDT * tx.rate); // Fallback para datos viejos
       const currentTotalVal = newInv.usdt * newInv.avgPrice;
       const prevTotalVal = currentTotalVal - totalCost;
       const prevUSDT = newInv.usdt - tx.amountUSDT;
@@ -214,7 +223,7 @@ export default function App() {
     } else if (tx.type === 'sell') {
       const totalUSDTBack = tx.amountUSDT + (tx.feeUSDT || 0);
       newInv.usdt += totalUSDTBack;
-      newInv.ves -= tx.totalBS;
+      newInv.ves -= (tx.totalBS || (tx.amountUSDT * tx.rate));
 
     } else if (tx.type === 'swap') {
       const fee = tx.feeUSDT || 0;
@@ -224,15 +233,15 @@ export default function App() {
       newInv.avgPrice = prevUSDT > 0 ? currentTotalVal / prevUSDT : 0;
 
     } else if (tx.type === 'expense') {
-      newInv.ves += tx.amountBS;
+      newInv.ves += (tx.amountBS || 0);
 
     } else if (tx.type === 'capital') {
-       if (tx.currency === 'VES') newInv.ves -= tx.amount;
+       if (tx.currency === 'VES') newInv.ves -= (tx.amount || 0);
        else if (tx.currency === 'USDT') {
-         const costWas = tx.amount * (tx.rate || 0);
+         const costWas = (tx.amount || 0) * (tx.rate || 0);
          const currentTotalVal = newInv.usdt * newInv.avgPrice;
          const prevTotalVal = currentTotalVal - costWas;
-         const prevUSDT = newInv.usdt - tx.amount;
+         const prevUSDT = newInv.usdt - (tx.amount || 0);
          newInv.usdt = prevUSDT;
          newInv.avgPrice = prevUSDT > 0 ? prevTotalVal / prevUSDT : 0;
        }
@@ -275,30 +284,24 @@ export default function App() {
     }
   };
 
-  // --- V2.7: FUNCIÓN DE RESET TOTAL ---
   const handleResetApp = async () => {
     if (!confirm("⚠️ PELIGRO: ¿Estás seguro de que quieres BORRAR TODA LA INFORMACIÓN?\n\nSe eliminarán todas las transacciones, deudas y se pondrán los saldos en CERO.\n\nEsta acción no se puede deshacer.")) return;
 
     setLoading(true);
 
-    // 1. Resetear Inventario
     const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
     await setDoc(invRef, { usdt: 0, ves: 0, avgPrice: 0 });
 
-    // 2. Borrar Transacciones (Local y Remoto)
-    // Nota: Firestore requiere borrar documento por documento si no es desde Admin SDK
     const deleteTxPromises = transactions.map(tx => 
       deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id))
     );
 
-    // 3. Borrar Préstamos
     const deleteLoanPromises = loans.map(l => 
       deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', l.id))
     );
 
     await Promise.all([...deleteTxPromises, ...deleteLoanPromises]);
     
-    // Resetear estados locales para feedback inmediato
     setTransactions([]);
     setLoans([]);
     setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
@@ -314,7 +317,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V2.7 - Gestión Total.</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V2.8 - Stability Patch</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -380,7 +383,7 @@ export default function App() {
                 <Save size={14}/> Guardar Cambios
               </button>
               
-              {/* BOTÓN DE RESET TOTAL V2.7 */}
+              {/* BOTÓN DE RESET TOTAL */}
               <button onClick={handleResetApp} className="w-full bg-red-500/10 border border-red-500/50 py-2 rounded-lg text-red-400 font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-500 hover:text-white transition-colors">
                 <AlertTriangle size={14}/> Restablecer Fábrica (Borrar Todo)
               </button>
@@ -445,16 +448,17 @@ export default function App() {
   );
 }
 
-// --- MÓDULOS DE INTERFAZ ---
+// --- MÓDULOS DE INTERFAZ BLINDADOS ---
 
 function Dashboard({ transactions, onDelete }) {
   const todayStats = useMemo(() => {
     const startOfDay = new Date();
     startOfDay.setHours(0,0,0,0);
     const todays = transactions.filter(t => t.createdAt?.seconds * 1000 > startOfDay.getTime());
-    const sold = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + curr.totalBS, 0);
+    // SAFETY CHECK: (curr.totalBS || 0)
+    const sold = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.totalBS || 0), 0);
     const profit = todays.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
-    const spent = todays.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amountBS, 0);
+    const spent = todays.filter(t => t.type === 'expense').reduce((acc, curr) => acc + (curr.amountBS || 0), 0);
     return { count: todays.length, sold, profit, spent };
   }, [transactions]);
 
@@ -505,10 +509,10 @@ function Dashboard({ transactions, onDelete }) {
                    tx.type === 'swap' ? 'Swap / Transfer' : 'Gasto'}
                 </p>
                 <p className="text-[10px] text-slate-500">
-                  {tx.type === 'swap' ? `Fee: ${tx.feeUSDT} USDT` :
-                   tx.type === 'capital' ? `${tx.currency}` :
+                  {tx.type === 'swap' ? `Fee: ${(tx.feeUSDT || 0)} USDT` :
+                   tx.type === 'capital' ? `${tx.currency || 'N/A'}` :
                    tx.type === 'expense' ? (tx.description || 'Sin nota') :
-                   `@ ${tx.rate} • ${tx.exchange}`}
+                   `@ ${(tx.rate || 0)} • ${tx.exchange || '-'}`}
                 </p>
               </div>
             </div>
@@ -516,10 +520,10 @@ function Dashboard({ transactions, onDelete }) {
             <div className="flex items-center gap-3">
               <div className="text-right">
                 <p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-emerald-400' : 'text-slate-200'}`}>
-                  {tx.type === 'expense' ? `-Bs ${tx.amountBS.toLocaleString()}` : 
-                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${tx.amount.toLocaleString()}` : `+$${tx.amount}`) :
-                   tx.type === 'swap' ? `-$${tx.feeUSDT}` :
-                   `$${tx.amountUSDT.toFixed(2)}`}
+                  {tx.type === 'expense' ? `-Bs ${(tx.amountBS || 0).toLocaleString()}` : 
+                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${(tx.amount || 0).toLocaleString()}` : `+$${(tx.amount || 0)}`) :
+                   tx.type === 'swap' ? `-$${(tx.feeUSDT || 0)}` :
+                   `$${(tx.amountUSDT || 0).toFixed(2)}`}
                 </p>
               </div>
               <button onClick={() => onDelete(tx)} className="p-2 text-slate-700 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
@@ -533,23 +537,20 @@ function Dashboard({ transactions, onDelete }) {
 
 function StatsModule({ transactions }) {
   const stats = useMemo(() => {
-    // 1. Filtrar solo gastos
+    // Safety Checks
     const expenses = transactions.filter(t => t.type === 'expense');
-    const totalSpent = expenses.reduce((acc, curr) => acc + curr.amountBS, 0);
+    const totalSpent = expenses.reduce((acc, curr) => acc + (curr.amountBS || 0), 0);
 
-    // 2. Agrupar por categoría
     const byCategory = expenses.reduce((acc, curr) => {
       const cat = curr.category || 'Otros';
-      acc[cat] = (acc[cat] || 0) + curr.amountBS;
+      acc[cat] = (acc[cat] || 0) + (curr.amountBS || 0);
       return acc;
     }, {});
 
-    // 3. Profit Total Histórico
     const totalProfitUSDT = transactions.filter(t => t.type === 'sell').reduce((acc, curr) => acc + (curr.profitUSDT || 0), 0);
     
-    // Estimado Profit en Bs (Usando tasa promedio de ventas reciente o referencial)
     const sells = transactions.filter(t => t.type === 'sell');
-    const avgSellRate = sells.length > 0 ? (sells.reduce((acc, t) => acc + t.rate, 0) / sells.length) : 0;
+    const avgSellRate = sells.length > 0 ? (sells.reduce((acc, t) => acc + (t.rate || 0), 0) / sells.length) : 0;
     const totalProfitBS = totalProfitUSDT * avgSellRate;
 
     return { totalSpent, byCategory, totalProfitBS, totalProfitUSDT };
@@ -579,7 +580,7 @@ function StatsModule({ transactions }) {
              </span>
              <div 
                className="w-full bg-emerald-500/20 border border-emerald-500/50 rounded-t-lg transition-all hover:bg-emerald-500/30"
-               style={{ height: `${Math.min(100, (stats.totalProfitBS / (stats.totalProfitBS + stats.totalSpent)) * 100)}%` }}
+               style={{ height: `${Math.min(100, (stats.totalProfitBS / ((stats.totalProfitBS + stats.totalSpent) || 1)) * 100)}%` }}
              ></div>
              <p className="text-[10px] text-emerald-500 font-bold">GANADO</p>
            </div>
@@ -591,7 +592,7 @@ function StatsModule({ transactions }) {
              </span>
              <div 
                className="w-full bg-red-500/20 border border-red-500/50 rounded-t-lg transition-all hover:bg-red-500/30"
-               style={{ height: `${Math.min(100, (stats.totalSpent / (stats.totalProfitBS + stats.totalSpent)) * 100)}%` }}
+               style={{ height: `${Math.min(100, (stats.totalSpent / ((stats.totalProfitBS + stats.totalSpent) || 1)) * 100)}%` }}
              ></div>
              <p className="text-[10px] text-red-500 font-bold">GASTADO</p>
            </div>
