@@ -49,7 +49,8 @@ import {
   Save,
   X,
   AlertTriangle,
-  Info
+  Info,
+  Activity
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE (MANUAL PARA ESTABILIDAD) ---
@@ -67,7 +68,7 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
-// --- UTILIDAD DE SEGURIDAD (ANTI-CRASH) ---
+// --- UTILIDAD DE SEGURIDAD ---
 const safeNum = (val) => {
   const num = parseFloat(val);
   return isNaN(num) ? 0 : num;
@@ -82,13 +83,11 @@ export default function App() {
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // Estados para edición manual
   const [editingInventory, setEditingInventory] = useState(false);
   const [tempInv, setTempInv] = useState({ usdt: '', ves: '', avgPrice: '' });
 
   const appId = 'p2p-v2-production';
 
-  // Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -97,11 +96,8 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Data Fetching
   useEffect(() => {
     if (!user) return;
-    
-    // Timeout de seguridad
     const safetyTimeout = setTimeout(() => setLoading(false), 5000);
 
     const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
@@ -154,7 +150,6 @@ export default function App() {
 
     } else if (data.type === 'sell') {
       const revenueVES = safeNum(data.totalBS); 
-      // Calculamos profit contable solo para registro
       const costOfSold = safeNum(data.amountUSDT) * newInv.avgPrice;
       const profitBS = revenueVES - costOfSold;
       data.profitUSDT = safeNum(data.rate) > 0 ? profitBS / safeNum(data.rate) : 0;
@@ -171,7 +166,6 @@ export default function App() {
 
     } else if (data.type === 'expense') {
       newInv.ves -= safeNum(data.amountBS);
-      // Dolarizar gasto para estadísticas
       data.expenseUSDT = newInv.avgPrice > 0 ? safeNum(data.amountBS) / newInv.avgPrice : 0;
 
     } else if (data.type === 'capital') {
@@ -187,7 +181,6 @@ export default function App() {
       }
     }
 
-    // Guardar referencia histórica del costo base
     data.avgPriceAtMoment = newInv.avgPrice;
 
     await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), {
@@ -197,7 +190,6 @@ export default function App() {
 
     const invRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
     await setDoc(invRef, newInv);
-    
     setView('dashboard');
   };
 
@@ -250,7 +242,7 @@ export default function App() {
     await setDoc(invRef, newInv);
   };
 
-  // Reset Total (Deep Clean)
+  // Reset Total
   const handleResetApp = async () => {
     if (!confirm("⚠️ PELIGRO: ¿Borrar TODA la base de datos y reiniciar en CERO?")) return;
 
@@ -320,7 +312,7 @@ export default function App() {
           <ArrowRightLeft size={48} className="text-emerald-400" />
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">P2P Trader Pro</h1>
-        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.7.1 - Stats Pro</p>
+        <p className="text-slate-400 mb-8 max-w-xs">Terminal V3.9 - Volume Stats</p>
         <button 
           onClick={() => signInWithPopup(auth, provider)}
           className="bg-white text-slate-900 px-8 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 transition-colors"
@@ -451,7 +443,7 @@ export default function App() {
 // --- MÓDULOS DE INTERFAZ ---
 
 function Dashboard({ transactions, inventory, onDelete }) {
-  // LÓGICA V3.7: Crecimiento Real (Time Travel)
+  // Lógica de "Time Travel" (Crecimiento Real)
   const todayMetrics = useMemo(() => {
     const startOfDay = new Date();
     startOfDay.setHours(0,0,0,0);
@@ -467,6 +459,11 @@ function Dashboard({ transactions, inventory, onDelete }) {
     let startUSDT = safeNum(inventory.usdt);
     let startVES = safeNum(inventory.ves);
     
+    // Calcular Volumen de Ventas y Gastos en Bs para visualización
+    const soldBS = todays.filter(t => t.type === 'sell').reduce((acc, t) => acc + safeNum(t.totalBS), 0);
+    const spentBS = todays.filter(t => t.type === 'expense').reduce((acc, t) => acc + safeNum(t.amountBS), 0);
+
+    // Reversa de operaciones para encontrar el patrimonio inicial
     todays.forEach(tx => {
        if(tx.type === 'buy') {
           startUSDT -= safeNum(tx.amountUSDT);
@@ -484,22 +481,24 @@ function Dashboard({ transactions, inventory, onDelete }) {
        }
     });
 
-    // Valorar Equity
+    // Valoración del Patrimonio (Actual vs Inicial)
     const valuationRate = safeNum(inventory.avgPrice) || 1;
     const currentEquityUSDT = safeNum(inventory.usdt) + (safeNum(inventory.ves) / valuationRate);
     const startEquityUSDT = startUSDT + (startVES / valuationRate);
     
-    // Descontar inyecciones
-    const capitalInjectionsUSDT = todays.filter(t => t.type === 'capital').reduce((acc, t) => {
+    // Ajuste por Fondeos (No contar inyecciones como ganancia)
+    const deposits = todays.filter(t => t.type === 'capital').reduce((acc, t) => {
         const val = t.currency === 'USDT' ? safeNum(t.amount) : (safeNum(t.amount) / valuationRate);
         return acc + val;
     }, 0);
 
-    const realGrowth = (currentEquityUSDT - startEquityUSDT) - capitalInjectionsUSDT;
+    const realGrowth = (currentEquityUSDT - startEquityUSDT) - deposits;
 
     return { 
         count: todays.length, 
-        realGrowth 
+        realGrowth,
+        soldBS,
+        spentBS
     };
   }, [transactions, inventory]);
 
@@ -508,13 +507,15 @@ function Dashboard({ transactions, inventory, onDelete }) {
       <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex justify-between items-center">
         <div>
           <p className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1"><Calendar size={10}/> Resumen Hoy</p>
-          <p className="text-xs text-slate-500 mt-1">Operaciones: <span className="text-white font-mono">{todayMetrics.count}</span></p>
+          <p className="text-xs text-slate-500 mt-1">Ventas: <span className="text-white font-mono">{todayMetrics.soldBS.toLocaleString()} Bs</span></p>
+          <p className="text-xs text-slate-500">Gastos: <span className="text-red-400 font-mono">{todayMetrics.spentBS.toLocaleString()} Bs</span></p>
         </div>
         <div className="text-right">
            <p className="text-[10px] text-slate-400 uppercase font-bold">Crecimiento Real</p>
            <p className={`text-xl font-bold ${todayMetrics.realGrowth >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
              {todayMetrics.realGrowth >= 0 ? '+' : ''}{todayMetrics.realGrowth.toFixed(2)} USDT
            </p>
+           <p className="text-[10px] text-slate-600">{todayMetrics.count} Ops.</p>
         </div>
       </div>
 
@@ -546,12 +547,20 @@ function Dashboard({ transactions, inventory, onDelete }) {
                    tx.type === 'capital' ? 'Fondeo' :
                    tx.type === 'swap' ? 'Swap / Transfer' : 'Gasto'}
                 </p>
-                <p className="text-[10px] text-slate-500">
-                  {tx.type === 'swap' ? `Fee: ${safeNum(tx.feeUSDT)} USDT` :
-                   tx.type === 'capital' ? `${tx.currency}` :
-                   tx.type === 'expense' ? (tx.description || 'Sin nota') :
-                   `@ ${safeNum(tx.rate)}`}
-                </p>
+                <div className="flex flex-col">
+                  <p className="text-[10px] text-slate-500">
+                    {tx.type === 'swap' ? `Fee: ${safeNum(tx.feeUSDT)} USDT` :
+                     tx.type === 'capital' ? `${tx.currency}` :
+                     tx.type === 'expense' ? (tx.description || 'Sin nota') :
+                     `Tasa: ${safeNum(tx.rate)}`} 
+                  </p>
+                  {/* TEXT FIX V3.8 */}
+                  {tx.type === 'sell' && tx.avgPriceAtMoment && (
+                    <p className="text-[9px] text-slate-600 flex items-center gap-1">
+                      <Info size={8}/> Base: {(tx.avgPriceAtMoment || 0).toFixed(2)}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
             
@@ -563,10 +572,10 @@ function Dashboard({ transactions, inventory, onDelete }) {
                    tx.type === 'swap' ? `-$${safeNum(tx.feeUSDT)}` :
                    `$${safeNum(tx.amountUSDT).toFixed(2)}`}
                 </p>
-                {/* Profit contable como referencia visual (aunque el real es el Growth) */}
+                {/* TEXT FIX V3.8 */}
                 {tx.type === 'sell' && (
                   <p className={`text-[10px] ${safeNum(tx.profitUSDT) > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                    {safeNum(tx.profitUSDT).toFixed(2)} (Contable)
+                    +{safeNum(tx.profitUSDT).toFixed(2)} (Est.)
                   </p>
                 )}
               </div>
@@ -579,7 +588,7 @@ function Dashboard({ transactions, inventory, onDelete }) {
   );
 }
 
-// --- MÓDULO DE ESTADÍSTICAS PRO ---
+// --- MÓDULO DE ESTADÍSTICAS PRO CON VOLUMEN (V3.9) ---
 function StatsModule({ transactions, inventory }) {
   const [range, setRange] = useState('day'); 
 
@@ -587,6 +596,11 @@ function StatsModule({ transactions, inventory }) {
     const now = new Date();
     const startTime = new Date();
     if (range === 'day') startTime.setHours(0,0,0,0);
+    if (range === 'week') {
+      const day = now.getDay() || 7; 
+      if (day !== 1) startTime.setHours(-24 * (day - 1)); 
+      startTime.setHours(0,0,0,0);
+    }
     if (range === 'month') startTime.setDate(1); 
     if (range === 'all') startTime.setFullYear(2000); 
 
@@ -595,7 +609,15 @@ function StatsModule({ transactions, inventory }) {
       return time > startTime.getTime();
     });
 
-    // Replay Logic
+    // 1. Volumen Operado (USDT) - Suma bruta de movimientos
+    const totalVolumeUSDT = filteredTxs.reduce((acc, t) => {
+        if (t.type === 'buy' || t.type === 'sell' || t.type === 'swap') {
+            return acc + safeNum(t.amountUSDT);
+        }
+        return acc;
+    }, 0);
+
+    // 2. Replay Logic (Crecimiento)
     let startUSDT = safeNum(inventory.usdt);
     let startVES = safeNum(inventory.ves);
     
@@ -638,7 +660,7 @@ function StatsModule({ transactions, inventory }) {
       return acc;
     }, {});
 
-    return { realGrowthUSDT, totalExpensesUSDT, byCategory };
+    return { realGrowthUSDT, totalExpensesUSDT, byCategory, totalVolumeUSDT };
   }, [transactions, inventory, range]);
 
   const categories = [
@@ -654,19 +676,29 @@ function StatsModule({ transactions, inventory }) {
   return (
     <div className="space-y-6">
       <div className="flex bg-slate-800 p-1 rounded-lg justify-center">
-         {['day', 'month', 'all'].map(r => (
+         {['day', 'week', 'month', 'all'].map(r => (
              <button key={r} onClick={() => setRange(r)} className={`flex-1 py-1 text-xs font-bold rounded capitalize transition-colors ${range === r ? 'bg-slate-700 text-white' : 'text-slate-500'}`}>
-               {r === 'day' ? 'Hoy' : r === 'month' ? 'Mes' : 'Todo'}
+               {r === 'day' ? 'Hoy' : r === 'week' ? 'Semana' : r === 'month' ? 'Mes' : 'Todo'}
              </button>
          ))}
       </div>
 
-      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 text-center">
-        <p className="text-xs text-slate-400 uppercase font-bold mb-2">Crecimiento Neto (Profit Real)</p>
-        <h2 className={`text-4xl font-black ${metrics.realGrowthUSDT >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {metrics.realGrowthUSDT >= 0 ? '+' : ''}{metrics.realGrowthUSDT.toFixed(2)} <span className="text-sm text-slate-500">USDT</span>
-        </h2>
-        <p className="text-[10px] text-slate-500 mt-2">Base: Inventario + Caja</p>
+      <div className="grid grid-cols-2 gap-4">
+        {/* Tarjeta Growth */}
+        <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 text-center">
+            <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Crecimiento Neto</p>
+            <h2 className={`text-2xl font-black ${metrics.realGrowthUSDT >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {metrics.realGrowthUSDT >= 0 ? '+' : ''}{metrics.realGrowthUSDT.toFixed(2)} <span className="text-[10px] text-slate-500">USDT</span>
+            </h2>
+        </div>
+
+        {/* Tarjeta Volumen (NUEVA) */}
+        <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 text-center">
+            <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">Volumen Movido</p>
+            <h2 className="text-2xl font-black text-blue-400">
+                ${metrics.totalVolumeUSDT.toLocaleString('en-US', { maximumFractionDigits: 0 })} <span className="text-[10px] text-slate-500">USDT</span>
+            </h2>
+        </div>
       </div>
 
       <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
