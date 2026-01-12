@@ -62,7 +62,10 @@ import {
   ToggleRight,
   Target,
   Pencil,
-  Scale
+  Scale,
+  MessageCircle,
+  Diamond,
+  Smartphone
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -338,7 +341,7 @@ export default function App() {
                 <Activity size={32} className="text-white" />
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
-            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">Beta 4.1</span></div>
+            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">Beta 4.2</span></div>
             <div className="space-y-3">
                 <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
@@ -754,7 +757,7 @@ function Dashboard({ transactions, inventory, onDelete, isGuest }) {
             
             <div className="flex items-center gap-3">
               <div className="text-right">
-                <p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-red-400' : 'text-white'}`}>
+                <p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-emerald-400' : 'text-slate-200'}`}>
                   {tx.type === 'expense' ? `-Bs ${safeNum(tx.amountBS).toLocaleString()}` : 
                    tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${safeNum(tx.amount).toLocaleString()}` : `+$${safeNum(tx.amount)}`) :
                    tx.type === 'swap' ? `-$${safeNum(tx.feeUSDT)}` :
@@ -941,8 +944,79 @@ function SimulatorModule() {
   const [tab, setTab] = useState('cycles'); 
   return (
     <div className="pb-20">
-      <div className="bg-slate-900 p-2 sticky top-0 z-50 border-b border-slate-800"><div className="flex bg-slate-950 p-1 rounded-xl"><button onClick={() => setTab('cycles')} className={`flex-1 py-2 text-xs font-bold rounded-lg ${tab === 'cycles' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Ciclos Pro</button><button onClick={() => setTab('simple')} className={`flex-1 py-2 text-xs font-bold rounded-lg ${tab === 'simple' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Brecha Rápida</button></div></div>
-      {tab === 'cycles' ? <CycleSimulator /> : <SimpleGapCalculator />}
+      <div className="bg-slate-900 p-2 sticky top-0 z-50 border-b border-slate-800">
+        <div className="flex bg-slate-950 p-1 rounded-xl overflow-x-auto no-scrollbar gap-1">
+            <button onClick={() => setTab('cycles')} className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg whitespace-nowrap transition-colors ${tab === 'cycles' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Ciclos Pro</button>
+            <button onClick={() => setTab('telegram')} className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg whitespace-nowrap transition-colors ${tab === 'telegram' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Telegram P2P</button>
+            <button onClick={() => setTab('simple')} className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg whitespace-nowrap transition-colors ${tab === 'simple' ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>Brecha Rápida</button>
+        </div>
+      </div>
+      {tab === 'cycles' && <CycleSimulator />}
+      {tab === 'telegram' && <TelegramArbitrageCalc />}
+      {tab === 'simple' && <SimpleGapCalculator />}
+    </div>
+  );
+}
+
+function TelegramArbitrageCalc() {
+  const [adPrice, setAdPrice] = useState(900);
+  const [tonUsdt, setTonUsdt] = useState(1.72);
+  const [sellUsdt, setSellUsdt] = useState(533);
+
+  const teleFee = 0.009; 
+  const bankFee = 0.003; 
+
+  // 1. Mismo Banco: Pagas Precio Anuncio, Recibes (1-0.9%) TON
+  const effectivePriceBank = adPrice / (1 - teleFee);
+  const impliedUsdtBank = effectivePriceBank / tonUsdt;
+  const gapBank = impliedUsdtBank > 0 ? ((sellUsdt - impliedUsdtBank) / impliedUsdtBank) * 100 : 0;
+
+  // 2. PagoMóvil: Pagas (Precio Anuncio + 0.3%), Recibes (1-0.9%) TON
+  const effectivePricePM = (adPrice * (1 + bankFee)) / (1 - teleFee);
+  const impliedUsdtPM = effectivePricePM / tonUsdt;
+  const gapPM = impliedUsdtPM > 0 ? ((sellUsdt - impliedUsdtPM) / impliedUsdtPM) * 100 : 0;
+
+  return (
+    <div className="p-4 space-y-4">
+       <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
+           <h3 className="text-xs text-blue-400 font-bold uppercase mb-4 flex items-center gap-2"><MessageCircle size={14}/> Configuración Telegram</h3>
+           <div className="space-y-4">
+               <div><label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Precio Anuncio (Bs/TON)</label><input type="number" value={adPrice} onChange={e=>setAdPrice(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/></div>
+               <div className="grid grid-cols-2 gap-3">
+                   <div><label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Tasa TON/USDT</label><input type="number" value={tonUsdt} onChange={e=>setTonUsdt(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/></div>
+                   <div><label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Venta USDT (Bs)</label><input type="number" value={sellUsdt} onChange={e=>setSellUsdt(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/></div>
+               </div>
+           </div>
+       </div>
+
+       <div className="grid grid-cols-2 gap-3">
+           {/* Card Banco */}
+           <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 relative overflow-hidden">
+               <div className="absolute top-0 left-0 w-full h-1 bg-blue-500"></div>
+               <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">Mismo Banco</p>
+               <h2 className={`text-2xl font-bold ${gapBank > 0 ? 'text-emerald-400' : 'text-red-400'}`}>{gapBank > 0 ? '+' : ''}{gapBank.toFixed(2)}%</h2>
+               <div className="mt-2 pt-2 border-t border-slate-800">
+                   <p className="text-[10px] text-slate-500">Costo Implícito</p>
+                   <p className="text-sm font-mono text-white">{impliedUsdtBank.toFixed(2)} Bs/USDT</p>
+               </div>
+           </div>
+
+           {/* Card PagoMóvil */}
+           <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 relative overflow-hidden">
+               <div className="absolute top-0 left-0 w-full h-1 bg-purple-500"></div>
+               <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">Pago Móvil</p>
+               <h2 className={`text-2xl font-bold ${gapPM > 0 ? 'text-emerald-400' : 'text-red-400'}`}>{gapPM > 0 ? '+' : ''}{gapPM.toFixed(2)}%</h2>
+               <div className="mt-2 pt-2 border-t border-slate-800">
+                   <p className="text-[10px] text-slate-500">Costo Implícito</p>
+                   <p className="text-sm font-mono text-white">{impliedUsdtPM.toFixed(2)} Bs/USDT</p>
+               </div>
+           </div>
+       </div>
+
+       <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-800 text-xs text-slate-500">
+           <p><strong>Nota:</strong> El cálculo asume 0.9% de fee de Maker en Telegram Wallet y 0.3% adicional para PagoMóvil sobre la base en Bs.</p>
+           <p className="mt-1 text-slate-400">Precio Real por TON (PM): <span className="font-mono text-white">{effectivePricePM.toFixed(2)} Bs</span></p>
+       </div>
     </div>
   );
 }
