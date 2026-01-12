@@ -715,17 +715,58 @@ function Dashboard({ transactions, inventory, onDelete, isGuest }) {
       {transactions.map(tx => (
           <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
             <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-full ${tx.type === 'sell' ? 'bg-red-500/20 text-red-400' : tx.type === 'buy' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700 text-slate-400'}`}>
-                {tx.type === 'sell' ? <ArrowUpRight size={18}/> : tx.type === 'buy' ? <ArrowDownLeft size={18}/> : <RefreshCw size={18}/>}
+              <div className={`p-2 rounded-full ${
+                tx.type === 'sell' ? 'bg-red-500/20 text-red-400' : 
+                tx.type === 'buy' ? 'bg-emerald-500/20 text-emerald-400' : 
+                tx.type === 'capital' ? 'bg-purple-500/20 text-purple-400' :
+                tx.type === 'swap' ? 'bg-orange-500/20 text-orange-400' :
+                'bg-red-500/20 text-red-400'
+              }`}>
+                {tx.type === 'sell' ? <ArrowUpRight size={18}/> : 
+                 tx.type === 'buy' ? <ArrowDownLeft size={18}/> : 
+                 tx.type === 'capital' ? <PlusCircle size={18}/> :
+                 tx.type === 'swap' ? <RefreshCw size={18}/> :
+                 <TrendingDown size={18}/>}
               </div>
               <div>
-                <p className="font-bold text-sm text-slate-200">{tx.type === 'sell' ? 'Venta USDT' : tx.type === 'buy' ? 'Compra USDT' : tx.type}</p>
-                <p className="text-[10px] text-slate-500">{tx.type === 'swap' ? `Fee: ${safeNum(tx.feeUSDT)}` : `Tasa: ${safeNum(tx.rate)}`}</p>
+                <p className="font-bold text-sm text-slate-200">
+                  {tx.type === 'expense' && tx.category ? tx.category :
+                   tx.type === 'sell' ? 'Venta USDT' : 
+                   tx.type === 'buy' ? 'Compra USDT' : 
+                   tx.type === 'capital' ? 'Fondeo' :
+                   tx.type === 'swap' ? 'Swap / Transfer' : 'Gasto'}
+                </p>
+                <div className="flex flex-col">
+                  <p className="text-[10px] text-slate-500">
+                    {tx.type === 'swap' ? `Fee: ${safeNum(tx.feeUSDT)} USDT` :
+                     tx.type === 'capital' ? `${tx.currency}` :
+                     tx.type === 'expense' ? (tx.description || 'Sin nota') :
+                     `Tasa: ${safeNum(tx.rate)}`} 
+                  </p>
+                  {tx.type === 'sell' && tx.avgPriceAtMoment && (
+                    <p className="text-[9px] text-slate-600 flex items-center gap-1">
+                      <Info size={8}/> Base: {(tx.avgPriceAtMoment || 0).toFixed(2)}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
+            
             <div className="flex items-center gap-3">
-              <div className="text-right"><p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-red-400' : 'text-white'}`}>{tx.type === 'sell' ? `$${safeNum(tx.amountUSDT).toFixed(2)}` : tx.type === 'buy' ? `$${safeNum(tx.amountUSDT).toFixed(2)}` : ''}</p></div>
-              <button onClick={() => onDelete(tx)} className="p-2 text-slate-700 hover:text-red-500"><Trash2 size={14} /></button>
+              <div className="text-right">
+                <p className={`font-mono font-bold ${tx.type === 'sell' ? 'text-red-400' : 'text-white'}`}>
+                  {tx.type === 'expense' ? `-Bs ${safeNum(tx.amountBS).toLocaleString()}` : 
+                   tx.type === 'capital' ? (tx.currency === 'VES' ? `+Bs ${safeNum(tx.amount).toLocaleString()}` : `+$${safeNum(tx.amount)}`) :
+                   tx.type === 'swap' ? `-$${safeNum(tx.feeUSDT)}` :
+                   `$${safeNum(tx.amountUSDT).toFixed(2)}`}
+                </p>
+                {tx.type === 'sell' && (
+                  <p className={`text-[10px] ${safeNum(tx.profitUSDT) > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                    +{safeNum(tx.profitUSDT).toFixed(2)} (Est.)
+                  </p>
+                )}
+              </div>
+              <button onClick={() => onDelete(tx)} className="p-2 text-slate-700 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
             </div>
           </div>
       ))}
@@ -735,35 +776,163 @@ function Dashboard({ transactions, inventory, onDelete, isGuest }) {
 
 function TradeForm({ onTrade, onCancel, isGuest }) {
   const [mode, setMode] = useState('sell');
+  const [exchange, setExchange] = useState('Binance');
   const [inputVal, setInputVal] = useState('');
   const [rate, setRate] = useState('');
+  const [bankFee, setBankFee] = useState(false);
   const [exchangeFeeType, setExchangeFeeType] = useState('none');
+  const [swapFee, setSwapFee] = useState('');
+  const [capCurrency, setCapCurrency] = useState('VES');
+  const [expenseCategory, setExpenseCategory] = useState('Comida');
+  const [expenseNote, setExpenseNote] = useState('');
 
   const valInput = parseFloat(inputVal) || 0;
   const valRate = parseFloat(rate) || 0;
-  let calcUSDT = 0; let calcBS = 0; let feeUSDT = 0; let feeBS = 0;
 
-  if (mode === 'buy') { calcUSDT = valInput; calcBS = valInput * valRate; }
-  else if (mode === 'sell') { calcBS = valInput; calcUSDT = valRate > 0 ? valInput / valRate : 0; 
-      if (exchangeFeeType === 'std') feeUSDT = 0.06;
-      else if (exchangeFeeType === 'merchant') feeUSDT = calcUSDT * 0.002;
-      else if (exchangeFeeType === 'airtm') feeUSDT = calcUSDT * 0.0071;
+  let calcUSDT = 0;
+  let calcBS = 0;
+  let feeUSDT_Calculated = 0;
+  let feeBS_Calculated = 0;
+
+  if (mode === 'buy') {
+    calcUSDT = valInput;
+    calcBS = valInput * valRate;
+    if (bankFee) {
+        feeBS_Calculated = calcBS * 0.003;
+        calcBS += feeBS_Calculated;
+    }
+  } else if (mode === 'sell') {
+    calcBS = valInput;
+    calcUSDT = valRate > 0 ? valInput / valRate : 0;
+    if (exchangeFeeType === 'std') feeUSDT_Calculated = 0.06;
+    else if (exchangeFeeType === 'merchant') feeUSDT_Calculated = calcUSDT * 0.002;
+    else if (exchangeFeeType === 'airtm') feeUSDT_Calculated = calcUSDT * 0.0071;
   }
 
-  const handleSubmit = () => { onTrade({ type: mode, amountUSDT: calcUSDT, totalBS: calcBS, rate: valRate, feeBS, feeUSDT }); };
+  const handleSubmit = () => {
+    if (mode === 'expense') {
+      onTrade({ type: 'expense', amountBS: valInput, category: expenseCategory, description: expenseNote });
+      return;
+    }
+    if (mode === 'swap') {
+      onTrade({ type: 'swap', amountUSDT: valInput, feeUSDT: parseFloat(swapFee) || 0, description: 'Swap / Transferencia' });
+      return;
+    }
+    if (mode === 'capital') {
+      onTrade({ type: 'capital', amount: valInput, currency: capCurrency, rate: capCurrency === 'USDT' ? valRate : 0, exchange: 'Fondeo' });
+      return;
+    }
+    onTrade({ type: mode, amountUSDT: calcUSDT, totalBS: calcBS, rate: valRate, feeBS: feeBS_Calculated, feeUSDT: feeUSDT_Calculated, exchange });
+  };
+
+  const categories = [
+    { id: 'Comida', icon: <Utensils size={16}/> },
+    { id: 'Servicios', icon: <Zap size={16}/> },
+    { id: 'Ropa', icon: <Shirt size={16}/> },
+    { id: 'Diezmo', icon: <Heart size={16}/> },
+    { id: 'Transporte', icon: <Car size={16}/> },
+    { id: 'Salud', icon: <Cross size={16}/> },
+    { id: 'Otros', icon: <HelpCircle size={16}/> },
+  ];
 
   return (
-    <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
-      {isGuest && <div className="bg-yellow-500/10 text-yellow-500 text-xs p-2 rounded mb-4 text-center">Modo Invitado</div>}
-      <div className="flex bg-slate-950 p-1 rounded-lg mb-6"><button onClick={() => setMode('buy')} className={`flex-1 py-2 text-xs font-bold ${mode==='buy'?'bg-emerald-600 text-white':'text-slate-500'}`}>COMPRA (Verde)</button><button onClick={() => setMode('sell')} className={`flex-1 py-2 text-xs font-bold ${mode==='sell'?'bg-red-600 text-white':'text-slate-500'}`}>VENTA (Roja)</button></div>
+    <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in slide-in-from-bottom-8">
+      {isGuest && <div className="bg-yellow-500/10 text-yellow-500 text-xs p-2 rounded mb-4 text-center border border-yellow-500/20">Modo Invitado: Las operaciones no se guardarán.</div>}
+      
+      <div className="flex bg-slate-950 p-1 rounded-lg mb-6 overflow-x-auto no-scrollbar">
+        {['buy', 'sell', 'swap', 'expense', 'capital'].map(m => (
+          <button key={m} onClick={() => setMode(m)} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-md transition-colors whitespace-nowrap ${mode === m ? (m === 'buy' ? 'bg-emerald-600 text-white' : m === 'sell' ? 'bg-red-600 text-white' : m === 'swap' ? 'bg-orange-600 text-white' : m === 'capital' ? 'bg-purple-600 text-white' : 'bg-red-500 text-white') : 'text-slate-500 hover:bg-slate-800'}`}>
+            {m === 'buy' ? 'Comprar' : m === 'sell' ? 'Vender' : m === 'swap' ? 'Swap' : m === 'capital' ? 'Fondeo' : 'Gasto'}
+          </button>
+        ))}
+      </div>
+
       <div className="space-y-4">
-        <div><label className="text-[10px] text-slate-400 uppercase font-bold">{mode==='buy'?'USDT a Comprar':'Bs Recibidos'}</label><input type="number" value={inputVal} onChange={e=>setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700"/></div>
-        <div><label className="text-[10px] text-slate-400 uppercase font-bold">Tasa</label><input type="number" value={rate} onChange={e=>setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700"/></div>
-        {mode === 'sell' && (
-            <div><label className="text-[10px] text-slate-400 uppercase font-bold">Comisión</label><select value={exchangeFeeType} onChange={(e) => setExchangeFeeType(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700"><option value="none">0</option><option value="merchant">Merchant 0.2%</option></select></div>
+        <div>
+          <label className="text-[10px] text-slate-400 uppercase font-bold">
+            {mode === 'buy' ? 'Cantidad a Comprar (USDT)' :
+             mode === 'sell' ? 'Total Bs Recibidos' :
+             mode === 'swap' ? 'Monto a Mover (USDT)' :
+             mode === 'expense' ? 'Monto Gasto (Bs)' :
+             `Monto a Ingresar (${capCurrency})`}
+          </label>
+          <input type="number" step="0.00000001" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 font-mono text-lg" placeholder="0.00"/>
+        </div>
+
+        {mode === 'expense' && (
+          <div className="space-y-3">
+            <label className="text-[10px] text-slate-400 uppercase font-bold">Categoría</label>
+            <div className="grid grid-cols-3 gap-2">
+               {categories.map(cat => (
+                 <button key={cat.id} onClick={() => setExpenseCategory(cat.id)} className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs font-bold transition-all ${expenseCategory === cat.id ? 'bg-red-600 border-red-500 text-white' : 'bg-slate-950 border-slate-700 text-slate-500'}`}>
+                   {cat.icon} {cat.id}
+                 </button>
+               ))}
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase font-bold">Nota (Opcional)</label>
+              <input type="text" value={expenseNote} onChange={e => setExpenseNote(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none" placeholder="Ej: Pizza"/>
+            </div>
+          </div>
+        )}
+
+        {mode !== 'expense' && mode !== 'swap' && (
+          <div>
+            {mode === 'capital' && capCurrency === 'VES' ? null : (
+              <>
+                <label className="text-[10px] text-slate-400 uppercase font-bold">{mode === 'capital' ? 'Costo Base (Opcional)' : 'Tasa de Cambio'}</label>
+                <input type="number" step="0.000001" value={rate} onChange={e => setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500" placeholder="0.00"/>
+              </>
+            )}
+          </div>
+        )}
+
+        {mode === 'swap' && (
+           <div>
+             <label className="text-[10px] text-slate-400 uppercase font-bold">Comisión Pagada (USDT)</label>
+             <input type="number" value={swapFee} onChange={e => setSwapFee(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-orange-500" placeholder="Ej: 1.00"/>
+           </div>
+        )}
+
+        {mode === 'capital' && (
+          <div className="flex gap-2">
+            <button onClick={() => setCapCurrency('VES')} className={`flex-1 py-2 text-xs border rounded ${capCurrency === 'VES' ? 'border-blue-500 text-blue-400 bg-blue-500/10' : 'border-slate-700 text-slate-500'}`}>Bolívares</button>
+            <button onClick={() => setCapCurrency('USDT')} className={`flex-1 py-2 text-xs border rounded ${capCurrency === 'USDT' ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : 'border-slate-700 text-slate-500'}`}>USDT</button>
+          </div>
+        )}
+
+        {(mode === 'buy' || mode === 'sell') && (
+          <div className="bg-slate-950 p-3 rounded-lg border border-slate-800">
+             <div className="flex gap-2 mb-4 overflow-x-auto no-scrollbar">
+                {['Binance', 'BingX', 'Bitget', 'OKX', 'CoinEx', 'Telegram'].map(ex => (
+                  <button key={ex} onClick={() => setExchange(ex)} className={`px-2 py-1 rounded border text-[10px] ${exchange === ex ? 'bg-indigo-600 border-indigo-500 text-white' : 'border-slate-700 text-slate-500'}`}>{ex}</button>
+                ))}
+             </div>
+             {mode === 'buy' && (
+               <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                 <input type="checkbox" checked={bankFee} onChange={e => setBankFee(e.target.checked)} className="accent-blue-500"/>
+                 Comisión Bancaria (0.3%)
+               </label>
+             )}
+             {mode === 'sell' && (
+               <div className="flex flex-col gap-2">
+                 <span className="text-[10px] text-slate-400 uppercase">Comisión Exchange</span>
+                 <select value={exchangeFeeType} onChange={(e) => setExchangeFeeType(e.target.value)} className="bg-slate-900 text-white text-xs p-2 rounded border border-slate-700 outline-none">
+                   <option value="none">Sin Comisión (0)</option>
+                   <option value="std">Standard (0.06 USDT)</option>
+                   <option value="merchant">Merchant (0.2%)</option>
+                   <option value="airtm">AirTM (0.71%)</option>
+                 </select>
+               </div>
+             )}
+          </div>
         )}
       </div>
-      <div className="flex gap-3 mt-6"><button onClick={onCancel} className="flex-1 py-3 bg-slate-800 text-slate-400 rounded-lg">Cancelar</button><button onClick={handleSubmit} className="flex-1 py-3 bg-blue-600 text-white rounded-lg">Confirmar</button></div>
+
+      <div className="flex gap-3 mt-6">
+        <button onClick={onCancel} className="flex-1 py-3 bg-slate-800 rounded-lg text-slate-400 text-sm font-bold hover:bg-slate-700">Cancelar</button>
+        <button onClick={handleSubmit} className={`flex-1 py-3 rounded-lg text-white font-bold text-sm shadow-lg ${mode === 'buy' ? 'bg-emerald-600 hover:bg-emerald-500' : mode === 'sell' ? 'bg-red-600 hover:bg-red-500' : mode === 'swap' ? 'bg-orange-600 hover:bg-orange-500' : mode === 'capital' ? 'bg-purple-600 hover:bg-purple-500' : 'bg-red-600 hover:bg-red-500'}`}>CONFIRMAR</button>
+      </div>
     </div>
   );
 }
@@ -934,9 +1103,56 @@ function SimpleGapCalculator() {
   );
 }
 
-function LoansModule({ loans, isGuest }) {
-    if (isGuest) return <div className="text-center p-10 text-slate-500">Deudas desactivadas</div>;
-    return <div className="text-center p-10 text-slate-500">Módulo de Préstamos</div>;
+function LoansModule({ loans, user, db, appId, isGuest }) {
+  const [name, setName] = useState('');
+  const [amount, setAmount] = useState('');
+  const [currency, setCurrency] = useState('USD');
+
+  if (isGuest) {
+      return (
+          <div className="flex flex-col items-center justify-center h-[60vh] text-center p-6 opacity-50">
+              <PiggyBank size={48} className="text-slate-600 mb-4"/>
+              <h3 className="text-xl font-bold text-slate-400">Deudas Desactivadas</h3>
+              <p className="text-sm text-slate-600 mt-2">No puedes gestionar préstamos en modo invitado.</p>
+          </div>
+      );
+  }
+
+  const addLoan = async () => {
+    if(!name || !amount) return;
+    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), { debtor: name, amount: parseFloat(amount), currency, active: true, createdAt: serverTimestamp() });
+    setName(''); setAmount('');
+  };
+  const settleLoan = async (id) => { if(confirm("¿Marcar como pagado?")) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', id)); };
+  return (
+    <div className="space-y-4">
+      <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+        <h3 className="text-sm font-bold text-slate-300 mb-3 flex items-center gap-2"><PiggyBank size={16}/> Nuevo Préstamo</h3>
+        <div className="flex gap-2 mb-2">
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="¿Quién?" className="flex-[2] bg-slate-950 p-2 rounded text-sm text-white border border-slate-700"/>
+          <input value={amount} onChange={e=>setAmount(e.target.value)} type="number" placeholder="Monto" className="flex-1 bg-slate-950 p-2 rounded text-sm text-white border border-slate-700"/>
+        </div>
+        <div className="flex justify-between items-center">
+          <select value={currency} onChange={e=>setCurrency(e.target.value)} className="bg-slate-950 text-white text-xs p-2 rounded border border-slate-700">
+            <option value="USD">USD</option>
+            <option value="VES">VES</option>
+          </select>
+          <button onClick={addLoan} className="bg-indigo-600 px-4 py-2 rounded text-xs font-bold text-white">Prestar</button>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {loans.map(loan => (
+          <div key={loan.id} className="flex justify-between items-center bg-slate-900/50 p-3 rounded-lg border border-slate-800">
+            <div><p className="text-sm font-bold text-white">{loan.debtor}</p></div>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-indigo-400">{loan.amount} {loan.currency}</span>
+              <button onClick={() => settleLoan(loan.id)} className="text-emerald-500 text-xs border border-emerald-500/30 px-2 py-1 rounded">Cobrar</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function NavButton({ icon, label, active, onClick, highlight }) {
