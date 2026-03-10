@@ -1091,8 +1091,10 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
     <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in slide-in-from-bottom-8">
       {!forcedMode && (
           <div className="flex bg-slate-950 p-1 rounded-lg mb-6 overflow-x-auto no-scrollbar">
-            {['buy', 'sell', 'expense', 'capital'].map(m => (
-              <button key={m} onClick={() => setMode(m)} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-md transition-colors ${mode === m ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>{m}</button>
+            {['buy', 'sell', 'capital'].map(m => (
+              <button key={m} onClick={() => setMode(m)} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-md transition-colors ${mode === m ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>
+                {m === 'buy' ? 'Comprar' : m === 'sell' ? 'Vender' : 'Fondeo'}
+              </button>
             ))}
           </div>
       )}
