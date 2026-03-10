@@ -11,7 +11,8 @@ import {
   ArrowUpRight, ArrowDownLeft, PlusCircle, Trash2, RefreshCw, Edit2, Calendar, PieChart, 
   Utensils, Zap, Shirt, Heart, Car, HelpCircle, Cross, Save, X, AlertTriangle, Info, 
   Activity, User, RefreshCcw, Settings, BarChart3, ArrowRight, Lock, ToggleLeft, ToggleRight, 
-  Target, Pencil, Scale, MessageCircle, Loader2, CheckCircle2, ChevronDown, ChevronUp, DollarSign
+  Target, Pencil, Scale, MessageCircle, Loader2, CheckCircle2, ChevronDown, ChevronUp, DollarSign,
+  Store, ShoppingBag, Gamepad2
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -713,18 +714,21 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
             
             <div className="space-y-4">
               {Object.keys(chartData.byCategory).length === 0 && <p className="text-center text-xs text-slate-600">Sin fugas registradas.</p>}
-              {['Comida', 'Servicios', 'Ocio', 'Compras', 'Transporte', 'Salud', 'Otros'].map(catId => {
+              {['Comida', 'Bodega', 'Servicios', 'Compras', 'Ropa', 'Ocio', 'Transporte', 'Diezmo', 'Otros'].map(catId => {
                 const amount = chartData.byCategory[catId] || 0;
                 const percent = chartData.totalPeriodExpenses > 0 ? (amount / chartData.totalPeriodExpenses) * 100 : 0;
                 if (amount === 0) return null;
                 
                 let color = 'text-slate-400'; let bar = 'bg-slate-500';
                 if(catId==='Comida') { color='text-orange-400'; bar='bg-orange-500'; }
+                if(catId==='Bodega') { color='text-amber-400'; bar='bg-amber-500'; }
                 if(catId==='Servicios') { color='text-yellow-400'; bar='bg-yellow-500'; }
-                if(catId==='Compras') { color='text-pink-400'; bar='bg-pink-500'; }
-                if(catId==='Ocio') { color='text-purple-400'; bar='bg-purple-500'; }
+                if(catId==='Compras') { color='text-emerald-400'; bar='bg-emerald-500'; }
+                if(catId==='Ropa') { color='text-pink-400'; bar='bg-pink-500'; }
+                if(catId==='Ocio') { color='text-red-400'; bar='bg-red-500'; }
                 if(catId==='Transporte') { color='text-blue-400'; bar='bg-blue-500'; }
-                if(catId==='Salud') { color='text-emerald-400'; bar='bg-emerald-500'; }
+                if(catId==='Diezmo') { color='text-indigo-400'; bar='bg-indigo-500'; }
+                if(catId==='Otros') { color='text-slate-400'; bar='bg-slate-500'; }
 
                 return (
                   <div key={catId}>
@@ -1083,7 +1087,17 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
     onTrade({ type: mode, amountUSDT: calcUSDT, totalBS: calcBS, rate: valRate, feeUSDT: feeUSDT_Calculated });
   };
 
-  const categories = [ { id: 'Comida', icon: <Utensils size={16}/> }, { id: 'Servicios', icon: <Zap size={16}/> }, { id: 'Ropa', icon: <Shirt size={16}/> }, { id: 'Ocio', icon: <Heart size={16}/> }, { id: 'Transporte', icon: <Car size={16}/> }, { id: 'Otros', icon: <HelpCircle size={16}/> } ];
+  const categories = [
+    { id: 'Comida', icon: <Utensils size={16}/>, bg: 'bg-orange-600', border: 'border-orange-500' },
+    { id: 'Bodega', icon: <Store size={16}/>, bg: 'bg-amber-600', border: 'border-amber-500' },
+    { id: 'Servicios', icon: <Zap size={16}/>, bg: 'bg-yellow-600', border: 'border-yellow-500' },
+    { id: 'Compras', icon: <ShoppingBag size={16}/>, bg: 'bg-emerald-600', border: 'border-emerald-500' },
+    { id: 'Ropa', icon: <Shirt size={16}/>, bg: 'bg-pink-600', border: 'border-pink-500' },
+    { id: 'Ocio', icon: <Gamepad2 size={16}/>, bg: 'bg-red-600', border: 'border-red-500' },
+    { id: 'Transporte', icon: <Car size={16}/>, bg: 'bg-blue-600', border: 'border-blue-500' },
+    { id: 'Diezmo', icon: <Heart size={16}/>, bg: 'bg-indigo-600', border: 'border-indigo-500' },
+    { id: 'Otros', icon: <HelpCircle size={16}/>, bg: 'bg-slate-600', border: 'border-slate-500' }
+  ];
 
   return (
     <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in slide-in-from-bottom-8">
@@ -1103,7 +1117,21 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
         </div>
         {mode === 'expense' ? (
           <div className="space-y-3">
-            <div className="grid grid-cols-3 gap-2">{categories.map(cat => (<button key={cat.id} onClick={() => setExpenseCategory(cat.id)} className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs font-bold ${expenseCategory === cat.id ? 'bg-red-600 border-red-500 text-white' : 'bg-slate-950 border-slate-700 text-slate-500'}`}>{cat.icon} {cat.id}</button>))}</div>
+            <div className="grid grid-cols-3 gap-2">
+              {categories.map(cat => (
+                <button
+                  key={cat.id}
+                  onClick={() => setExpenseCategory(cat.id)}
+                  className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs font-bold transition-all ${
+                    expenseCategory === cat.id
+                      ? `${cat.bg} ${cat.border} text-white shadow-md`
+                      : `bg-slate-950 border-slate-700 text-slate-500 hover:border-slate-600`
+                  }`}
+                >
+                  {cat.icon} {cat.id}
+                </button>
+              ))}
+            </div>
             <input type="text" value={expenseNote} onChange={e => setExpenseNote(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none" placeholder="Nota / Detalle"/>
           </div>
         ) : (
