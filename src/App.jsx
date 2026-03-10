@@ -384,7 +384,8 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                <div className="space-y-4">
                    <div>
                        <label className="text-[10px] text-slate-400 uppercase font-bold mb-1 block">Fecha del Cierre</label>
-                       <input type="date" value={snapDate} onChange={e=>setSnapDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 text-sm"/>
+                       {/* Se añade [color-scheme:dark] para que el icono del calendario resalte en fondos oscuros */}
+                       <input type="date" value={snapDate} onChange={e=>setSnapDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 text-sm [color-scheme:dark]"/>
                    </div>
                    <div className="grid grid-cols-2 gap-3">
                        <div>
@@ -1064,10 +1065,9 @@ function SimpleGapCalculator() {
 
 // Sub-Componente de Formulario (Legacy/Gastos)
 function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
-  const [mode, setMode] = useState(forcedMode || 'sell');
+  const [mode, setMode] = useState(forcedMode || 'buy');
   const [inputVal, setInputVal] = useState('');
   const [rate, setRate] = useState('');
-  const [exchangeFeeType, setExchangeFeeType] = useState('none');
   const [expenseCategory, setExpenseCategory] = useState('Comida');
   const [expenseNote, setExpenseNote] = useState('');
 
@@ -1075,9 +1075,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
   let calcUSDT = 0; let calcBS = 0; let feeUSDT_Calculated = 0;
 
   if (mode === 'buy') { calcUSDT = valInput; calcBS = valInput * valRate; }
-  else if (mode === 'sell') { calcBS = valInput; calcUSDT = valRate > 0 ? valInput / valRate : 0; 
-      if (exchangeFeeType === 'std') feeUSDT_Calculated = 0.06; else if (exchangeFeeType === 'merchant') feeUSDT_Calculated = calcUSDT * 0.002; else if (exchangeFeeType === 'airtm') feeUSDT_Calculated = calcUSDT * 0.0071;
-  }
+  else if (mode === 'sell') { calcBS = valInput; calcUSDT = valRate > 0 ? valInput / valRate : 0; }
 
   const handleSubmit = () => {
     if (mode === 'expense') return onTrade({ type: 'expense', amountBS: valInput, category: expenseCategory, description: expenseNote });
@@ -1090,7 +1088,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
   return (
     <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in slide-in-from-bottom-8">
       {!forcedMode && (
-          <div className="flex bg-slate-950 p-1 rounded-lg mb-6 overflow-x-auto no-scrollbar">
+          <div className="flex bg-slate-950 p-1 rounded-lg mb-6 overflow-x-auto no-scrollbar gap-1">
             {['buy', 'sell', 'capital'].map(m => (
               <button key={m} onClick={() => setMode(m)} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-md transition-colors ${mode === m ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>
                 {m === 'buy' ? 'Comprar' : m === 'sell' ? 'Vender' : 'Fondeo'}
