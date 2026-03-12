@@ -149,16 +149,23 @@ export default function App() {
 
   const handleSaveSnapshot = async (snapData) => {
       if (user.role === 'guest') return;
-      // Actualizar el inventario para que el header refleje la realidad actual
-      const newInv = { usdt: snapData.totalUsdt, ves: snapData.totalVes, avgPrice: snapData.avgPrice };
-      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
       
-      // Guardar el Snapshot histórico
-      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots'), {
-          ...snapData,
-          createdAt: serverTimestamp()
-      });
-      alert("Cierre registrado exitosamente.");
+      try {
+          // 1. Actualizar el inventario
+          const newInv = { usdt: snapData.totalUsdt, ves: snapData.totalVes, avgPrice: snapData.avgPrice };
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
+          
+          // 2. Guardar el Snapshot histórico
+          await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots'), {
+              ...snapData,
+              createdAt: serverTimestamp()
+          });
+          
+          alert("✅ Cierre registrado exitosamente.");
+      } catch (error) {
+          console.error("Error completo: ", error);
+          alert("❌ Error al guardar en Firebase: " + error.message);
+      }
   };
 
   const handleDeleteTransaction = async (tx) => {
