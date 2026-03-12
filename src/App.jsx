@@ -122,14 +122,16 @@ export default function App() {
       const costOfSold = safeNum(data.amountUSDT) * newInv.avgPrice;
       data.profitUSDT = safeNum(data.rate) > 0 ? (revenueVES - costOfSold) / safeNum(data.rate) : 0;
       newInv.usdt -= (safeNum(data.amountUSDT) + safeNum(data.feeUSDT)); newInv.ves += revenueVES;
-    } else if (data.type === 'swap') {
-      const fee = safeNum(data.feeUSDT);
-      const totalCost = newInv.usdt * newInv.avgPrice;
-      newInv.usdt -= fee;
-      newInv.avgPrice = newInv.usdt > 0 ? totalCost / newInv.usdt : 0;
     } else if (data.type === 'expense') {
-      newInv.ves -= safeNum(data.amountBS);
-      data.expenseUSDT = newInv.avgPrice > 0 ? safeNum(data.amountBS) / newInv.avgPrice : 0;
+      // NUEVA LÓGICA DE GASTOS: Soporte para USDT directo y Tasa manual en Bs
+      if (data.currency === 'USDT') {
+        newInv.usdt -= safeNum(data.amountUSDT);
+        data.expenseUSDT = safeNum(data.amountUSDT);
+      } else {
+        newInv.ves -= safeNum(data.amountBS);
+        const currentRate = safeNum(data.rate) > 0 ? safeNum(data.rate) : newInv.avgPrice;
+        data.expenseUSDT = currentRate > 0 ? safeNum(data.amountBS) / currentRate : 0;
+      }
     } else if (data.type === 'capital') {
       if (data.currency === 'VES') newInv.ves += safeNum(data.amount);
       else if (data.currency === 'USDT') {
@@ -161,10 +163,10 @@ export default function App() {
               createdAt: serverTimestamp()
           });
           
-          alert("✅ Cierre registrado exitosamente.");
+          alert("Cierre registrado exitosamente.");
       } catch (error) {
           console.error("Error completo: ", error);
-          alert("❌ Error al guardar en Firebase: " + error.message);
+          alert("Error al guardar en Firebase: " + error.message);
       }
   };
 
@@ -183,12 +185,13 @@ export default function App() {
     } else if (tx.type === 'sell') {
       newInv.usdt += (safeNum(tx.amountUSDT) + safeNum(tx.feeUSDT));
       newInv.ves -= (safeNum(tx.totalBS) || (safeNum(tx.amountUSDT) * safeNum(tx.rate)));
-    } else if (tx.type === 'swap') {
-      const currentTotalVal = newInv.usdt * newInv.avgPrice;
-      newInv.usdt += safeNum(tx.feeUSDT);
-      newInv.avgPrice = newInv.usdt > 0 ? currentTotalVal / newInv.usdt : 0;
     } else if (tx.type === 'expense') {
-      newInv.ves += safeNum(tx.amountBS);
+      // REVERSIÓN ACTUALIZADA PARA USDT Y BS
+      if (tx.currency === 'USDT' || tx.amountUSDT > 0) {
+        newInv.usdt += safeNum(tx.amountUSDT);
+      } else {
+        newInv.ves += safeNum(tx.amountBS);
+      }
     } else if (tx.type === 'capital') {
        if (tx.currency === 'VES') newInv.ves -= safeNum(tx.amount);
        else if (tx.currency === 'USDT') {
@@ -466,14 +469,14 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                                  item.type === 'sell' ? 'bg-red-500/20 text-red-400' : 
                                  item.type === 'buy' ? 'bg-emerald-500/20 text-emerald-400' : 
                                  item.type === 'capital' ? 'bg-purple-500/20 text-purple-400' :
-                                 item.type === 'swap' ? 'bg-orange-500/20 text-orange-400' :
-                                 'bg-red-500/20 text-red-400'
+                                 item.type === 'expense' ? 'bg-red-500/20 text-red-400' :
+                                 'bg-orange-500/20 text-orange-400'
                                }`}>
                                  {item.type === 'sell' ? <ArrowUpRight size={16}/> : 
                                   item.type === 'buy' ? <ArrowDownLeft size={16}/> : 
                                   item.type === 'capital' ? <PlusCircle size={16}/> :
-                                  item.type === 'swap' ? <RefreshCw size={16}/> :
-                                  <TrendingDown size={16}/>}
+                                  item.type === 'expense' ? <TrendingDown size={16}/> :
+                                  <RefreshCw size={16}/>}
                                </div>
                                <div>
                                  <p className="font-bold text-sm text-slate-200">
@@ -484,15 +487,18 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                                     item.type === 'swap' ? 'Swap' : 'Gasto'}
                                  </p>
                                  <p className="text-[10px] text-slate-500">
-                                     {item.type === 'expense' ? (item.description || 'Sin nota') : `Tasa: ${safeNum(item.rate)}`}
+                                     {item.type === 'expense' 
+                                        ? `${item.description || 'Sin nota'} ${item.currency === 'VES' && item.rate ? `(Tasa: ${item.rate})` : ''}` 
+                                        : `Tasa: ${safeNum(item.rate)}`}
                                  </p>
                                </div>
                              </div>
                              <div className="flex items-center gap-3">
                                <div className="text-right">
                                  <p className={`font-mono font-bold ${item.type === 'expense' ? 'text-red-400' : 'text-slate-200'}`}>
-                                   {item.type === 'expense' ? `-Bs ${safeNum(item.amountBS).toLocaleString()}` : 
-                                    item.type === 'capital' ? `+$${safeNum(item.amount)}` :
+                                   {item.type === 'expense' 
+                                    ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountBS).toLocaleString()}`) 
+                                    : item.type === 'capital' ? `+$${safeNum(item.amount)}` :
                                     `$${safeNum(item.amountUSDT).toFixed(2)}`}
                                  </p>
                                </div>
@@ -1081,15 +1087,29 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
   const [rate, setRate] = useState('');
   const [expenseCategory, setExpenseCategory] = useState('Comida');
   const [expenseNote, setExpenseNote] = useState('');
+  const [expenseCurrency, setExpenseCurrency] = useState('VES'); // 'VES' o 'USDT'
 
-  const valInput = parseFloat(inputVal) || 0; const valRate = parseFloat(rate) || 0;
-  let calcUSDT = 0; let calcBS = 0; let feeUSDT_Calculated = 0;
+  const valInput = parseFloat(inputVal) || 0; 
+  const valRate = parseFloat(rate) || 0;
+  let calcUSDT = 0; 
+  let calcBS = 0; 
+  let feeUSDT_Calculated = 0;
 
   if (mode === 'buy') { calcUSDT = valInput; calcBS = valInput * valRate; }
   else if (mode === 'sell') { calcBS = valInput; calcUSDT = valRate > 0 ? valInput / valRate : 0; }
 
   const handleSubmit = () => {
-    if (mode === 'expense') return onTrade({ type: 'expense', amountBS: valInput, category: expenseCategory, description: expenseNote });
+    if (mode === 'expense') {
+        return onTrade({ 
+            type: 'expense', 
+            currency: expenseCurrency,
+            amountBS: expenseCurrency === 'VES' ? valInput : 0, 
+            amountUSDT: expenseCurrency === 'USDT' ? valInput : 0,
+            rate: expenseCurrency === 'VES' ? valRate : 0,
+            category: expenseCategory, 
+            description: expenseNote 
+        });
+    }
     if (mode === 'capital') return onTrade({ type: 'capital', amount: valInput, currency: 'USDT', rate: valRate });
     onTrade({ type: mode, amountUSDT: calcUSDT, totalBS: calcBS, rate: valRate, feeUSDT: feeUSDT_Calculated });
   };
@@ -1117,13 +1137,27 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
             ))}
           </div>
       )}
-      <div className="space-y-4">
-        <div>
-          <label className="text-[10px] text-slate-400 uppercase font-bold">{mode === 'buy' ? 'USDT a Comprar' : mode === 'sell' ? 'Bs Recibidos' : mode === 'expense' ? 'Monto (Bs)' : 'Monto (USDT)'}</label>
-          <input type="number" step="0.01" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/>
-        </div>
-        {mode === 'expense' ? (
-          <div className="space-y-3">
+      
+      {mode === 'expense' ? (
+        <div className="space-y-4">
+            <div className="flex bg-slate-950 p-1 rounded-lg">
+                <button onClick={() => setExpenseCurrency('VES')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded transition-colors ${expenseCurrency === 'VES' ? 'bg-slate-800 text-white' : 'text-slate-600'}`}>En Bolívares</button>
+                <button onClick={() => setExpenseCurrency('USDT')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded transition-colors ${expenseCurrency === 'USDT' ? 'bg-slate-800 text-emerald-400' : 'text-slate-600'}`}>En USDT</button>
+            </div>
+
+            <div className="flex gap-2">
+                <div className="flex-1">
+                    <label className="text-[10px] text-slate-400 uppercase font-bold">{expenseCurrency === 'VES' ? 'Monto (Bs)' : 'Monto (USDT)'}</label>
+                    <input type="number" step="0.01" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/>
+                </div>
+                {expenseCurrency === 'VES' && (
+                    <div className="flex-1">
+                        <label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Manual (Opcional)</label>
+                        <input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} placeholder="Ej: 40.5" className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg focus:border-blue-500"/>
+                    </div>
+                )}
+            </div>
+
             <div className="grid grid-cols-3 gap-2">
               {categories.map(cat => (
                 <button
@@ -1140,11 +1174,20 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
               ))}
             </div>
             <input type="text" value={expenseNote} onChange={e => setExpenseNote(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none" placeholder="Nota / Detalle"/>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] text-slate-400 uppercase font-bold">{mode === 'buy' ? 'USDT a Comprar' : mode === 'sell' ? 'Bs Recibidos' : 'Monto (USDT)'}</label>
+            <input type="number" step="0.01" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/>
           </div>
-        ) : (
-          <div><label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Referencia</label><input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500"/></div>
-        )}
-      </div>
+          <div>
+            <label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Referencia</label>
+            <input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500"/>
+          </div>
+        </div>
+      )}
+
       <div className="flex gap-3 mt-6"><button onClick={onCancel} className="flex-1 py-3 bg-slate-800 rounded-lg text-slate-400 font-bold">Cancelar</button><button onClick={handleSubmit} className="flex-1 py-3 bg-blue-600 rounded-lg text-white font-bold shadow-lg hover:bg-blue-500">Guardar</button></div>
     </div>
   );
