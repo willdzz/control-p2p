@@ -12,7 +12,7 @@ import {
   Utensils, Zap, Shirt, Heart, Car, HelpCircle, Cross, Save, X, AlertTriangle, Info, 
   Activity, User, RefreshCcw, Settings, BarChart3, ArrowRight, Lock, ToggleLeft, ToggleRight, 
   Target, Pencil, Scale, MessageCircle, Loader2, CheckCircle2, ChevronDown, ChevronUp, DollarSign,
-  Store, ShoppingBag, Gamepad2, ChevronLeft, ChevronRight
+  Store, ShoppingBag, Gamepad2, ChevronLeft, ChevronRight, CornerRightUp, CornerLeftDown
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -45,9 +45,9 @@ const getLocalDateString = (dateObj) => {
 // --- COMPONENTE PRINCIPAL ---
 export default function App() {
   const [user, setUser] = useState(null);
-  const [view, setView] = useState('cierres'); // tabs: cierres, graficas, deudas, simulator
+  const [view, setView] = useState('cierres'); 
   const [transactions, setTransactions] = useState([]);
-  const [snapshots, setSnapshots] = useState([]); // Cierres diarios
+  const [snapshots, setSnapshots] = useState([]); 
   const [inventory, setInventory] = useState({ usdt: 0, ves: 0, avgPrice: 0 });
   const [goals, setGoals] = useState({ daily: 30, monthly: 600 });
   const [loans, setLoans] = useState([]);
@@ -135,7 +135,18 @@ export default function App() {
         newInv.avgPrice = totalUSDT > 0 ? (totalCostOld + costNew) / totalUSDT : 0;
         newInv.usdt = totalUSDT;
       }
+    } else if (data.type === 'loan_out') {
+      // V4.7: Salida de capital por préstamo
+      if (data.currency === 'USDT') {
+        newInv.usdt -= safeNum(data.amountUSDT);
+      } else {
+        newInv.ves -= safeNum(data.amountVES);
+      }
+    } else if (data.type === 'loan_in') {
+      // V4.7: Retorno de capital (Se asume que siempre se cobra en Bs localmente)
+      newInv.ves += safeNum(data.amountVES);
     }
+    
     data.avgPriceAtMoment = newInv.avgPrice;
     data.dateStr = getLocalDateString(); 
 
@@ -186,7 +197,13 @@ export default function App() {
          newInv.usdt = prevUSDT;
          newInv.avgPrice = prevUSDT > 0 ? (currentTotalVal - costWas) / prevUSDT : 0;
        }
+    } else if (tx.type === 'loan_out') {
+       if (tx.currency === 'USDT') newInv.usdt += safeNum(tx.amountUSDT);
+       else newInv.ves += safeNum(tx.amountVES);
+    } else if (tx.type === 'loan_in') {
+       newInv.ves -= safeNum(tx.amountVES);
     }
+    
     await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id));
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
   };
@@ -229,6 +246,11 @@ export default function App() {
 
   const handleLogout = () => { if (user.role === 'guest') setUser(null); else signOut(auth); setView('cierres'); };
 
+  // CÁLCULO DE LA TRINIDAD CONTABLE (V4.7)
+  const deferredCapital = useMemo(() => loans.reduce((acc, l) => acc + safeNum(l.amountUsd), 0), [loans]);
+  const operativeEquity = (safeNum(inventory.usdt) + (safeNum(inventory.ves) / (safeNum(inventory.avgPrice) || 1)));
+  const globalEquity = operativeEquity + deferredCapital;
+
   // --- LOGIN SCREEN ---
   if (!user) {
     return (
@@ -240,7 +262,7 @@ export default function App() {
                 <Activity size={32} className="text-white" />
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
-            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.6 Historial Extendido</span></div>
+            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.7 Finanzas Avanzadas</span></div>
             <div className="space-y-3">
                 <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
@@ -259,31 +281,42 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-24 max-w-md mx-auto relative">
       {view !== 'simulator' && (
         <div className="bg-gradient-to-b from-slate-900 to-slate-950 p-6 border-b border-slate-800">
-            <div className="flex justify-between items-center mb-4">
-            <div>
+            <div className="flex justify-between items-start mb-4">
                 <h2 className="text-xs text-slate-400 font-semibold tracking-wider uppercase flex items-center gap-2">
-                    {user.role === 'guest' ? <><User size={12}/> Modo Invitado</> : 'Patrimonio Actual'}
+                    {user.role === 'guest' ? <><User size={12}/> Modo Invitado</> : 'Balance General'}
                 </h2>
-                {user.role === 'guest' ? (
-                    <p className="text-xl font-bold text-slate-500 mt-1">Simulación</p>
-                ) : (
-                    <div className="flex items-baseline gap-2">
-                    <span className="text-3xl font-bold text-white">$ {(safeNum(inventory.usdt) + (safeNum(inventory.ves) / (safeNum(inventory.avgPrice) || 1))).toFixed(2)}</span>
-                    <span className="text-xs text-slate-500">USDT</span>
+                <div className="flex gap-2">
+                    {user.role !== 'guest' && (
+                        <button onClick={editingInventory ? () => setEditingInventory(false) : () => {setTempInv(inventory); setEditingInventory(true);}} className={`p-2 rounded-lg transition-colors ${editingInventory ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
+                            {editingInventory ? <X size={16}/> : <Edit2 size={16}/>}
+                        </button>
+                    )}
+                    <button onClick={handleLogout} className="bg-slate-800 p-2 rounded-lg text-slate-400 hover:text-white"><LogOut size={16}/></button>
+                </div>
+            </div>
+
+            {/* TRINIDAD CONTABLE (V4.7) */}
+            {user.role === 'guest' ? (
+                <p className="text-xl font-bold text-slate-500 mt-1">Simulación Activa</p>
+            ) : (
+                <div className="grid grid-cols-3 gap-2 w-full animate-in fade-in slide-in-from-top-2">
+                    <div className="bg-slate-900/50 p-3 rounded-xl border border-slate-800 flex flex-col justify-center">
+                        <p className="text-[9px] text-slate-500 uppercase font-bold mb-1">Caja Operativa</p>
+                        <p className="text-sm font-bold text-white">${operativeEquity.toFixed(2)}</p>
                     </div>
-                )}
-            </div>
-            <div className="flex gap-2">
-                {user.role !== 'guest' && (
-                    <button onClick={editingInventory ? () => setEditingInventory(false) : () => {setTempInv(inventory); setEditingInventory(true);}} className={`p-2 rounded-lg transition-colors ${editingInventory ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
-                        {editingInventory ? <X size={16}/> : <Edit2 size={16}/>}
-                    </button>
-                )}
-                <button onClick={handleLogout} className="bg-slate-800 p-2 rounded-lg text-slate-400 hover:text-white"><LogOut size={16}/></button>
-            </div>
-            </div>
+                    <div className="bg-pink-900/10 p-3 rounded-xl border border-pink-900/30 flex flex-col justify-center">
+                        <p className="text-[9px] text-pink-500/80 uppercase font-bold mb-1">Por Cobrar</p>
+                        <p className="text-sm font-bold text-pink-400">${deferredCapital.toFixed(2)}</p>
+                    </div>
+                    <div className="bg-emerald-900/10 p-3 rounded-xl border border-emerald-900/30 flex flex-col justify-center">
+                        <p className="text-[9px] text-emerald-500/80 uppercase font-bold mb-1">Patrim. Global</p>
+                        <p className="text-sm font-bold text-emerald-400">${globalEquity.toFixed(2)}</p>
+                    </div>
+                </div>
+            )}
+
             {editingInventory && user.role !== 'guest' ? (
-            <div className="bg-slate-800/50 p-4 rounded-xl border border-blue-500/30 mb-4 animate-in fade-in zoom-in-95">
+            <div className="bg-slate-800/50 p-4 rounded-xl border border-blue-500/30 mt-4 animate-in fade-in zoom-in-95">
                 <p className="text-xs text-blue-400 font-bold mb-3 uppercase text-center flex items-center justify-center gap-2"><Edit2 size={12}/> Ajuste Manual de Emergencia</p>
                 <div className="grid grid-cols-2 gap-3 mb-3">
                 <div><label className="text-[10px] text-slate-400">Total USDT</label><input type="number" value={tempInv.usdt} onChange={e=>setTempInv({...tempInv, usdt: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
@@ -303,7 +336,7 @@ export default function App() {
       <div className={view === 'simulator' ? 'p-0' : 'p-4'}>
         {view === 'cierres' && <CierresModule transactions={transactions} snapshots={snapshots} inventory={inventory} onSaveSnapshot={handleSaveSnapshot} onTrade={handleTrade} onDeleteTx={handleDeleteTransaction} isGuest={user.role === 'guest'} />}
         {view === 'graficas' && <GraficasModule transactions={transactions} snapshots={snapshots} inventory={inventory} goals={goals} onSaveGoals={handleUpdateGoals} isGuest={user.role === 'guest'} />}
-        {view === 'deudas' && <LoansModule loans={loans} user={user} db={db} appId={appId} isGuest={user.role === 'guest'} />}
+        {view === 'deudas' && <LoansModule loans={loans} user={user} db={db} appId={appId} isGuest={user.role === 'guest'} onTrade={handleTrade} />}
         {view === 'simulator' && <SimulatorModule />}
       </div>
 
@@ -326,7 +359,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
   const [snapRate, setSnapRate] = useState(inventory.avgPrice || 40);
   const [snapDate, setSnapDate] = useState(getLocalDateString());
   const [snapNote, setSnapNote] = useState('');
-  const [visibleItems, setVisibleItems] = useState(15); // NUEVO: Control de paginación visual
+  const [visibleItems, setVisibleItems] = useState(15); 
 
   useEffect(() => { setSnapUsdt(inventory.usdt); setSnapVes(inventory.ves); setSnapRate(inventory.avgPrice || 40); }, [inventory]);
 
@@ -348,7 +381,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
 
        {subTab === 'cierre' && (
            <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in zoom-in-95">
-               <h3 className="text-xs text-blue-400 font-bold uppercase mb-4 flex items-center gap-2"><Save size={14}/> Registrar Snapshot (Auditoría)</h3>
+               <h3 className="text-xs text-blue-400 font-bold uppercase mb-4 flex items-center gap-2"><Save size={14}/> Registrar Caja Operativa (Auditoría)</h3>
                <div className="space-y-4">
                    <div><label className="text-[10px] text-slate-400 uppercase font-bold mb-1 block">Fecha del Cierre</label><input type="date" value={snapDate} onChange={e=>setSnapDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 text-sm [color-scheme:dark]"/></div>
                    <div className="grid grid-cols-2 gap-3">
@@ -367,17 +400,14 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
        <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mt-6">Historial Operativo</h3>
        <div className="space-y-3">
            {(() => {
-               // 1. Mezclar y ordenar todo el historial
                const mixed = [ 
                    ...snapshots.map(s => ({ ...s, isSnap: true, time: s.createdAt?.seconds || Date.now()/1000 })), 
                    ...transactions.map(t => ({ ...t, isSnap: false, time: t.createdAt?.seconds || Date.now()/1000 })) 
                ].sort((a,b) => b.time - a.time);
                
-               // 2. Limitar según el botón "Ver Más"
                const visibleHistory = mixed.slice(0, visibleItems);
                const hasMoreHistory = visibleHistory.length < mixed.length;
 
-               // Función auxiliar para fechas amigables
                const formatDateHeader = (timestamp) => {
                    const d = new Date(timestamp * 1000);
                    const today = new Date();
@@ -400,7 +430,6 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
 
                            return (
                                <React.Fragment key={`${item.isSnap ? 'snap' : 'tx'}-${item.id}`}>
-                                   {/* Separador de Fecha */}
                                    {showHeader && (
                                        <div className="flex items-center gap-3 mt-6 mb-2">
                                            <div className="h-px bg-slate-800 flex-1"></div>
@@ -409,25 +438,57 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                                        </div>
                                    )}
                                    
-                                   {/* Tarjeta del Item */}
                                    {item.isSnap ? (
                                        <div className="bg-slate-800/40 p-3 rounded-xl border border-blue-500/20 flex justify-between items-center">
-                                           <div className="flex items-center gap-3"><div className="p-2 rounded-full bg-blue-500/20 text-blue-400"><Save size={16}/></div><div><p className="font-bold text-sm text-blue-100">Cierre de Caja</p><p className="text-[10px] text-slate-400">{item.date} {item.note ? `- ${item.note}` : ''}</p></div></div>
-                                           <div className="text-right"><p className="font-mono font-bold text-emerald-400">${safeNum(item.netEquityUsdt).toFixed(2)}</p><p className="text-[10px] text-slate-500">Patrimonio</p></div>
+                                           <div className="flex items-center gap-3"><div className="p-2 rounded-full bg-blue-500/20 text-blue-400"><Save size={16}/></div><div><p className="font-bold text-sm text-blue-100">Cierre Operativo</p><p className="text-[10px] text-slate-400">{item.date} {item.note ? `- ${item.note}` : ''}</p></div></div>
+                                           <div className="text-right"><p className="font-mono font-bold text-emerald-400">${safeNum(item.netEquityUsdt).toFixed(2)}</p><p className="text-[10px] text-slate-500">Caja Actual</p></div>
                                        </div>
                                    ) : (
                                        <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
                                          <div className="flex items-center gap-3">
-                                           <div className={`p-2 rounded-full ${item.type === 'sell' ? 'bg-red-500/20 text-red-400' : item.type === 'buy' ? 'bg-emerald-500/20 text-emerald-400' : item.type === 'capital' ? 'bg-purple-500/20 text-purple-400' : item.type === 'expense' ? 'bg-red-500/20 text-red-400' : 'bg-orange-500/20 text-orange-400'}`}>
-                                             {item.type === 'sell' ? <ArrowUpRight size={16}/> : item.type === 'buy' ? <ArrowDownLeft size={16}/> : item.type === 'capital' ? <PlusCircle size={16}/> : item.type === 'expense' ? <TrendingDown size={16}/> : <RefreshCw size={16}/>}
+                                           <div className={`p-2 rounded-full ${
+                                             item.type === 'sell' ? 'bg-red-500/20 text-red-400' : 
+                                             item.type === 'buy' ? 'bg-emerald-500/20 text-emerald-400' : 
+                                             item.type === 'capital' ? 'bg-purple-500/20 text-purple-400' : 
+                                             item.type === 'expense' ? 'bg-red-500/20 text-red-400' : 
+                                             item.type === 'loan_out' ? 'bg-pink-500/20 text-pink-400' :
+                                             item.type === 'loan_in' ? 'bg-emerald-500/20 text-emerald-400' :
+                                             'bg-orange-500/20 text-orange-400'}`}>
+                                             {item.type === 'sell' ? <ArrowUpRight size={16}/> : 
+                                              item.type === 'buy' ? <ArrowDownLeft size={16}/> : 
+                                              item.type === 'capital' ? <PlusCircle size={16}/> : 
+                                              item.type === 'expense' ? <TrendingDown size={16}/> : 
+                                              item.type === 'loan_out' ? <CornerRightUp size={16}/> :
+                                              item.type === 'loan_in' ? <CornerLeftDown size={16}/> :
+                                              <RefreshCw size={16}/>}
                                            </div>
                                            <div>
-                                             <p className="font-bold text-sm text-slate-200">{item.type === 'expense' && item.category ? item.category : item.type === 'sell' ? 'Venta USDT' : item.type === 'buy' ? 'Compra USDT' : item.type === 'capital' ? 'Fondeo' : item.type === 'swap' ? 'Swap' : 'Gasto'}</p>
-                                             <p className="text-[10px] text-slate-500">{item.type === 'expense' ? `${item.description || 'Sin nota'} ${item.currency === 'VES' && item.rate ? `(Tasa: ${item.rate})` : ''}` : `Tasa: ${safeNum(item.rate)}`}</p>
+                                             <p className="font-bold text-sm text-slate-200">
+                                                {item.type === 'expense' && item.category ? item.category : 
+                                                 item.type === 'sell' ? 'Venta USDT' : 
+                                                 item.type === 'buy' ? 'Compra USDT' : 
+                                                 item.type === 'capital' ? 'Fondeo' : 
+                                                 item.type === 'loan_out' ? `Préstamo a ${item.debtor}` :
+                                                 item.type === 'loan_in' ? `Cobro a ${item.debtor}` :
+                                                 item.type === 'swap' ? 'Swap' : 'Gasto'}
+                                             </p>
+                                             <p className="text-[10px] text-slate-500">
+                                                 {item.type === 'expense' ? `${item.description || 'Sin nota'} ${item.currency === 'VES' && item.rate ? `(Tasa: ${item.rate})` : ''}` : 
+                                                  item.type === 'loan_in' ? `Ganancia cambiaria: +$${safeNum(item.devaluationProfit).toFixed(2)}` :
+                                                  `Tasa: ${safeNum(item.rate)}`}
+                                             </p>
                                            </div>
                                          </div>
                                          <div className="flex items-center gap-3">
-                                           <div className="text-right"><p className={`font-mono font-bold ${item.type === 'expense' ? 'text-red-400' : 'text-slate-200'}`}>{item.type === 'expense' ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountBS).toLocaleString()}`) : item.type === 'capital' ? `+$${safeNum(item.amount)}` : `$${safeNum(item.amountUSDT).toFixed(2)}`}</p></div>
+                                           <div className="text-right">
+                                               <p className={`font-mono font-bold ${item.type === 'expense' || item.type === 'loan_out' ? 'text-red-400' : 'text-slate-200'}`}>
+                                                  {item.type === 'expense' ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountBS).toLocaleString()}`) : 
+                                                   item.type === 'loan_out' ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountVES).toLocaleString()}`) : 
+                                                   item.type === 'loan_in' ? `+Bs ${safeNum(item.amountVES).toLocaleString()}` :
+                                                   item.type === 'capital' ? `+$${safeNum(item.amount)}` : 
+                                                   `$${safeNum(item.amountUSDT).toFixed(2)}`}
+                                               </p>
+                                           </div>
                                            <button onClick={() => onDeleteTx(item)} className="p-2 text-slate-700 hover:text-red-500"><Trash2 size={14} /></button>
                                          </div>
                                        </div>
@@ -436,7 +497,6 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                            );
                        })}
                        
-                       {/* Control de Expansión */}
                        <div className="pt-6 pb-2 text-center">
                            {hasMoreHistory ? (
                                <button onClick={() => setVisibleItems(prev => prev + 15)} className="text-xs font-bold text-slate-300 bg-slate-800 px-5 py-2.5 rounded-full border border-slate-700 hover:bg-blue-600 hover:text-white hover:border-blue-500 transition-all shadow-lg flex items-center justify-center gap-2 mx-auto">
@@ -454,16 +514,14 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
   );
 }
 
-// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.5) ---
+// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.7) ---
 function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals, isGuest }) {
-  // Inicializamos el mes de vista con el mes actual
   const [viewMonth, setViewMonth] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); 
   const [editingGoals, setEditingGoals] = useState(false);
   const [tempGoals, setTempGoals] = useState(goals);
   
   if (isGuest) return <div className="flex justify-center p-10"><Lock className="text-slate-600"/></div>;
 
-  // Navegación Temporal
   const prevMonth = () => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() - 1, 1));
   const nextMonth = () => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 1));
   
@@ -471,20 +529,16 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
   const isCurrentMonth = viewMonth.getFullYear() === now.getFullYear() && viewMonth.getMonth() === now.getMonth();
   const monthName = viewMonth.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
 
-  // 1. Análisis del Mes Seleccionado (Cierre Contable y Gráficas de Barra/Pastel)
   const monthData = useMemo(() => {
       const year = viewMonth.getFullYear();
       const month = viewMonth.getMonth();
       const firstDay = new Date(year, month, 1);
-      const lastDay = new Date(year, month + 1, 0); // Último día del mes
+      const lastDay = new Date(year, month + 1, 0); 
       const daysInMonth = lastDay.getDate();
 
-      // Limitar predicción si es el mes actual
       const activeDays = isCurrentMonth ? now.getDate() : daysInMonth;
-
       const days = [];
       
-      // Buscar Capital Inicial (Último snapshot ANTES de este mes, o el primero del mes si no hay)
       const prePeriodSnaps = snapshots.filter(s => new Date(s.date) < firstDay).sort((a,b) => new Date(b.date) - new Date(a.date));
       const firstMonthSnaps = snapshots.filter(s => {
           const d = new Date(s.date); return d >= firstDay && d <= lastDay;
@@ -496,8 +550,9 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
       let currentEquity = startingCapital;
       let totalPeriodProfit = 0;
       let totalPeriodExpenses = 0;
+      let totalDeposits = 0;
+      let totalLoansOut = 0;
 
-      // Filtrar Gastos del mes para la Gráfica de Pastel
       const monthExpenses = transactions.filter(t => {
           const d = new Date(t.dateStr); return d >= firstDay && d <= lastDay && t.type === 'expense';
       });
@@ -508,7 +563,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
          return acc;
       }, {});
 
-      // Lógica Diaria
       for (let i = 0; i < activeDays; i++) {
           const d = new Date(year, month, i + 1);
           const dateStr = getLocalDateString(d);
@@ -517,7 +571,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
           let endOfDayEquity = currentEquity;
           if (daySnaps.length > 0) {
               endOfDayEquity = daySnaps.sort((a,b)=>b.time - a.time)[0].netEquityUsdt;
-              endingCapital = endOfDayEquity; // Actualizamos el capital final progresivamente
+              endingCapital = endOfDayEquity; 
           }
 
           const dayExpenses = transactions.filter(t => t.type === 'expense' && t.dateStr === dateStr);
@@ -526,13 +580,22 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
 
           const dayDeposits = transactions.filter(t => t.type === 'capital' && t.dateStr === dateStr);
           const sumDeposits = dayDeposits.reduce((acc, t) => acc + (t.currency === 'USDT' ? safeNum(t.amount) : safeNum(t.amount)/40), 0);
+          totalDeposits += sumDeposits;
+
+          // V4.7: Extraer préstamos para no dañar la matemática operativa
+          const dayLoansOut = transactions.filter(t => t.type === 'loan_out' && t.dateStr === dateStr).reduce((acc, t) => acc + safeNum(t.amountUSDT), 0);
+          const dayLoansInPrincipal = transactions.filter(t => t.type === 'loan_in' && t.dateStr === dateStr).reduce((acc, t) => acc + safeNum(t.amountUSDT), 0);
+          totalLoansOut += dayLoansOut;
 
           let dailyProfit = 0;
           if (daySnaps.length > 0) {
-             dailyProfit = (endOfDayEquity - currentEquity) + sumExpenses - sumDeposits;
+             // Fórmula blindada: El snapshot solo guarda Caja Operativa. 
+             // Prestar (-) baja la caja (no es pérdida, se suma de vuelta). 
+             // Cobrar (+) sube la caja (se resta el principal retornado, dejando solo la ganancia por devaluación).
+             dailyProfit = (endOfDayEquity - currentEquity) + sumExpenses + dayLoansOut - sumDeposits - dayLoansInPrincipal;
              currentEquity = endOfDayEquity; 
           } else {
-             currentEquity = currentEquity - sumExpenses + sumDeposits;
+             currentEquity = currentEquity - sumExpenses - dayLoansOut + sumDeposits + dayLoansInPrincipal;
              dailyProfit = 0; 
           }
 
@@ -540,22 +603,19 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
           days.push({ label: d.getDate(), dateStr, profit: dailyProfit, expense: sumExpenses });
       }
 
-      const netGrowth = totalPeriodProfit - totalPeriodExpenses; // Ganancia real menos fugas
+      const netGrowth = totalPeriodProfit - totalPeriodExpenses; 
 
-      return { days, startingCapital, endingCapital, totalPeriodProfit, totalPeriodExpenses, netGrowth, byCategory, daysInMonth };
+      return { days, startingCapital, endingCapital, totalPeriodProfit, totalPeriodExpenses, netGrowth, byCategory, daysInMonth, totalDeposits, totalLoansOut };
   }, [snapshots, transactions, viewMonth, isCurrentMonth]);
 
-  // 2. Evolución Patrimonial Macro (Últimos 6 meses)
   const macroTrend = useMemo(() => {
       const byMonth = {};
-      // Agrupar el último snapshot de cada mes ("YYYY-MM")
       snapshots.forEach(s => {
           const prefix = s.date.substring(0, 7); 
           if (!byMonth[prefix] || new Date(s.date) > new Date(byMonth[prefix].date)) {
               byMonth[prefix] = s;
           }
       });
-      // Convertir a array, ordenar cronológicamente y tomar los últimos 6 meses
       return Object.values(byMonth)
           .sort((a, b) => new Date(a.date) - new Date(b.date))
           .slice(-6)
@@ -565,7 +625,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
           }));
   }, [snapshots]);
 
-  // Utilidades para gráficos
   const maxProfit = Math.max(...monthData.days.map(d => d.profit), 10);
   const maxMacroEquity = Math.max(...macroTrend.map(m => m.equity), 100);
 
@@ -575,39 +634,47 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
   return (
       <div className="space-y-6 pb-20 animate-in fade-in">
           
-          {/* Navegador de Tiempo */}
           <div className="flex justify-between items-center bg-slate-900 p-2 rounded-xl border border-slate-800">
               <button onClick={prevMonth} className="p-2 text-slate-400 hover:text-white bg-slate-950 rounded-lg"><ChevronLeft size={18}/></button>
               <h2 className="text-sm font-bold text-white uppercase tracking-wider">{monthName}</h2>
               <button onClick={nextMonth} disabled={isCurrentMonth} className={`p-2 rounded-lg ${isCurrentMonth ? 'text-slate-800' : 'text-slate-400 hover:text-white bg-slate-950'}`}><ChevronRight size={18}/></button>
           </div>
 
-          {/* Tarjeta de Cierre Contable del Mes */}
           <div className="bg-gradient-to-br from-slate-900 to-slate-950 p-5 rounded-2xl border border-slate-800 shadow-xl relative overflow-hidden">
               <div className="absolute top-0 right-0 p-4 opacity-10"><Landmark size={64}/></div>
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Cierre Contable • {monthName}</h3>
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Desglose Contable • {monthName}</h3>
               
               <div className="grid grid-cols-2 gap-4 mb-4">
                   <div>
-                      <p className="text-[10px] text-slate-500 uppercase font-bold">Capital Inicial</p>
+                      <p className="text-[10px] text-slate-500 uppercase font-bold">Caja Operativa Inic.</p>
                       <p className="font-mono text-slate-300">${monthData.startingCapital.toFixed(2)}</p>
                   </div>
                   <div>
-                      <p className="text-[10px] text-slate-500 uppercase font-bold">Capital Final</p>
+                      <p className="text-[10px] text-slate-500 uppercase font-bold">Caja Operativa Final</p>
                       <p className="font-mono font-bold text-white">${monthData.endingCapital.toFixed(2)}</p>
                   </div>
               </div>
 
               <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2 text-sm">
-                  <div className="flex justify-between">
-                      <span className="text-slate-400">Rendimiento Bruto P2P</span>
-                      <span className="text-emerald-400 font-mono font-bold">+{monthData.totalPeriodProfit.toFixed(2)}</span>
+                  <div className="flex justify-between items-center">
+                      <span className="text-slate-400 text-xs">Rendimiento P2P (Operativo)</span>
+                      <span className="text-emerald-400 font-mono font-bold text-sm">+{monthData.totalPeriodProfit.toFixed(2)}</span>
                   </div>
-                  <div className="flex justify-between">
-                      <span className="text-slate-400">Total Fugas / Gastos</span>
-                      <span className="text-red-400 font-mono font-bold">-{monthData.totalPeriodExpenses.toFixed(2)}</span>
+                  <div className="flex justify-between items-center">
+                      <span className="text-slate-400 text-xs">Total Fugas / Gastos</span>
+                      <span className="text-red-400 font-mono font-bold text-sm">-{monthData.totalPeriodExpenses.toFixed(2)}</span>
                   </div>
+                  
                   <div className="border-t border-slate-800 pt-2 flex justify-between items-center">
+                      <span className="text-slate-400 text-[10px] uppercase">Fondeos (Inyectados)</span>
+                      <span className="text-blue-400 font-mono text-xs">+{monthData.totalDeposits.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                      <span className="text-slate-400 text-[10px] uppercase">Capital Prestado (Diferido)</span>
+                      <span className="text-pink-400 font-mono text-xs">-{monthData.totalLoansOut.toFixed(2)}</span>
+                  </div>
+
+                  <div className="border-t border-slate-800 pt-3 flex justify-between items-center">
                       <span className="text-xs font-bold text-white uppercase">Crecimiento Real (Neta)</span>
                       <span className={`font-mono font-black text-lg ${monthData.netGrowth >= 0 ? 'text-blue-400' : 'text-red-500'}`}>
                           {monthData.netGrowth > 0 ? '+' : ''}{monthData.netGrowth.toFixed(2)}
@@ -616,7 +683,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
               </div>
           </div>
 
-          {/* Meta Mensual (Solo si es el mes actual para no confundir historial) */}
           {isCurrentMonth && (
               editingGoals ? (
                  <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
@@ -645,7 +711,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
               )
           )}
 
-          {/* Gráfica de Rendimiento Diario */}
           <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800">
               <div className="flex justify-between items-center mb-6">
                   <h3 className="text-xs font-bold text-emerald-400 uppercase">Rendimiento Diario</h3>
@@ -657,7 +722,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
                           <div className="absolute bottom-full mb-1 opacity-0 group-hover:opacity-100 bg-slate-800 text-xs text-white p-1 rounded whitespace-nowrap z-20 pointer-events-none transition-opacity">Dia {d.label}: ${d.profit.toFixed(1)}</div>
                           {d.profit > 0 && <div className="w-full bg-emerald-500/80 rounded-t-sm hover:bg-emerald-400 transition-colors" style={{ height: `${(d.profit / maxProfit) * 100}%`, minHeight: '4px' }}></div>}
                           {d.profit < 0 && <div className="w-full bg-red-500/80 rounded-b-sm absolute top-full mt-0.5" style={{ height: `${(Math.abs(d.profit) / maxProfit) * 100}%`, minHeight: '4px' }}></div>}
-                          {/* Mostrar etiqueta de día solo cada 5 días para evitar amontonamiento */}
                           {(d.label % 5 === 0 || d.label === 1) && <span className="text-[8px] text-slate-600 mt-1 absolute top-full pt-1">{d.label}</span>}
                       </div>
                   ))}
@@ -667,7 +731,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
               </div>
           </div>
 
-          {/* Gráfica de Gastos Categorias */}
           <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
             <div className="flex justify-between items-center mb-4">
                 <h3 className="text-sm font-bold text-slate-300 flex items-center gap-2"><PieChart size={16}/> Distribución Gastos</h3>
@@ -701,7 +764,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
             </div>
           </div>
 
-          {/* Gráfico Macro: Evolución de los últimos 6 meses */}
           <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 mt-8">
               <h3 className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-4 flex items-center gap-2"><TrendingUp size={14}/> Evolución Patrimonial</h3>
               {macroTrend.length < 2 ? (
@@ -724,58 +786,144 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
   );
 }
 
-// --- MÓDULOS 3 Y 4 SE MANTIENEN IGUAL ---
-// Deudas Anti-Devaluacion
-function LoansModule({ loans, user, db, appId, isGuest }) {
-  const [name, setName] = useState(''); const [amountUsd, setAmountUsd] = useState(''); const [rateBcv, setRateBcv] = useState(''); const [settleId, setSettleId] = useState(null); const [settleRate, setSettleRate] = useState('');
+// --- MÓDULO 3: DEUDAS (AUTOMATIZADO V4.7) ---
+function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
+  const [name, setName] = useState(''); 
+  const [currency, setCurrency] = useState('VES');
+  const [amount, setAmount] = useState(''); 
+  const [rateP2P, setRateP2P] = useState(''); 
+  
+  const [settleId, setSettleId] = useState(null); 
+  const [settleVes, setSettleVes] = useState('');
+  const [settleRate, setSettleRate] = useState('');
 
   if (isGuest) return <div className="text-center p-10 text-slate-500">Deudas desactivadas</div>;
 
   const addLoan = async () => {
-    if(!name || !amountUsd || !rateBcv) return;
-    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), { debtor: name, amountUsd: parseFloat(amountUsd), initialRate: parseFloat(rateBcv), initialVes: parseFloat(amountUsd) * parseFloat(rateBcv), active: true, createdAt: serverTimestamp() });
-    setName(''); setAmountUsd(''); setRateBcv('');
+    if(!name || !amount || !rateP2P) return;
+    const valAmount = parseFloat(amount);
+    const valRate = parseFloat(rateP2P);
+    
+    // Cálculo inteligente para extraer capital
+    const amountUsd = currency === 'USDT' ? valAmount : valAmount / valRate;
+    const amountVes = currency === 'VES' ? valAmount : valAmount * valRate;
+
+    // 1. Debitar del Saldo Operativo
+    await onTrade({ 
+        type: 'loan_out', 
+        debtor: name, 
+        currency: currency, 
+        amountUSDT: amountUsd, 
+        amountVES: amountVes, 
+        rate: valRate 
+    });
+
+    // 2. Registrar la cuenta por cobrar
+    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), { 
+        debtor: name, 
+        amountUsd: amountUsd, 
+        initialRate: valRate, 
+        initialVes: amountVes, 
+        active: true, 
+        createdAt: serverTimestamp() 
+    });
+    setName(''); setAmount(''); setRateP2P('');
   };
 
   const handleSettle = async () => {
-      if(!settleRate) return;
+      if(!settleRate || !settleVes) return;
+      const valVes = parseFloat(settleVes);
+      const valRate = parseFloat(settleRate);
+      const receivedUsd = valVes / valRate;
+      
+      const loanToSettle = loans.find(l => l.id === settleId);
+      const profit = receivedUsd - loanToSettle.amountUsd;
+
+      // 1. Ingresar el capital + ganancia al Saldo Operativo
+      await onTrade({ 
+          type: 'loan_in', 
+          debtor: loanToSettle.debtor, 
+          amountVES: valVes, 
+          amountUSDT: loanToSettle.amountUsd, // El principal que retorna (para métricas)
+          devaluationProfit: profit, // La ganancia pura
+          rate: valRate 
+      });
+
+      // 2. Eliminar la cuenta por cobrar
       await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', settleId));
-      setSettleId(null); setSettleRate('');
+      setSettleId(null); setSettleRate(''); setSettleVes('');
   };
 
   return (
-    <div className="space-y-4 pb-20">
+    <div className="space-y-4 pb-20 animate-in fade-in">
       <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-lg">
-        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2"><PiggyBank size={16} className="text-pink-400"/> Prestar (Pegged to USD)</h3>
+        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2"><PiggyBank size={16} className="text-pink-400"/> Otorgar Préstamo</h3>
         <div className="space-y-3">
           <input value={name} onChange={e=>setName(e.target.value)} placeholder="Nombre del Deudor" className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500"/>
-          <div className="grid grid-cols-2 gap-3">
-              <div><label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Monto $</label><input value={amountUsd} onChange={e=>setAmountUsd(e.target.value)} type="number" placeholder="10.00" className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500"/></div>
-              <div><label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Tasa Base (VES)</label><input value={rateBcv} onChange={e=>setRateBcv(e.target.value)} type="number" placeholder="Ej: 40.5" className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500"/></div>
+          
+          <div className="flex bg-slate-950 p-1 rounded-lg">
+              <button onClick={() => setCurrency('VES')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${currency === 'VES' ? 'bg-slate-800 text-white' : 'text-slate-600'}`}>En Bolívares</button>
+              <button onClick={() => setCurrency('USDT')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${currency === 'USDT' ? 'bg-slate-800 text-emerald-400' : 'text-slate-600'}`}>En USDT</button>
           </div>
-          <div className="bg-slate-950 p-3 rounded-lg text-xs text-slate-400 flex justify-between items-center border border-slate-800"><span>Entregas al deudor:</span><span className="font-mono text-white font-bold">{((parseFloat(amountUsd)||0) * (parseFloat(rateBcv)||0)).toFixed(2)} VES</span></div>
-          <button onClick={addLoan} className="w-full bg-pink-600 hover:bg-pink-500 py-3 rounded-xl text-sm font-bold text-white shadow-lg transition-colors">Registrar Préstamo</button>
+
+          <div className="grid grid-cols-2 gap-3">
+              <div>
+                  <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Monto a Prestar</label>
+                  <input value={amount} onChange={e=>setAmount(e.target.value)} type="number" placeholder="Ej: 100" className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500"/>
+              </div>
+              <div>
+                  <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Tasa USDT Actual</label>
+                  <input value={rateP2P} onChange={e=>setRateP2P(e.target.value)} type="number" placeholder="Ej: 40.5" className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500"/>
+              </div>
+          </div>
+          
+          {amount && rateP2P && (
+              <div className="bg-pink-900/10 p-3 rounded-lg text-xs text-pink-200 border border-pink-900/30 text-center">
+                  Bloquearás: <span className="font-mono font-bold text-pink-400">{currency === 'USDT' ? amount : (parseFloat(amount)/parseFloat(rateP2P)).toFixed(2)} USDT</span> de tu Saldo Operativo.
+              </div>
+          )}
+
+          <button onClick={addLoan} className="w-full bg-pink-600 hover:bg-pink-500 py-3 rounded-xl text-sm font-bold text-white shadow-lg transition-colors mt-2 flex justify-center items-center gap-2"><CornerRightUp size={16}/> Debitar y Prestar</button>
         </div>
       </div>
+
       <div className="space-y-3">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider pl-1">Deudas Activas</h3>
-        {loans.length === 0 && <p className="text-center text-slate-600 text-sm py-4">Nadie te debe dinero.</p>}
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider pl-1">Capital Diferido (Por Cobrar)</h3>
+        {loans.length === 0 && <p className="text-center text-slate-600 text-sm py-4">Nadie te debe dinero actualmente.</p>}
         {loans.map(loan => (
           <div key={loan.id} className="bg-slate-900 p-4 rounded-xl border border-slate-800 relative overflow-hidden group">
             {settleId === loan.id ? (
                 <div className="animate-in fade-in slide-in-from-right-4">
                     <p className="text-xs text-emerald-400 font-bold mb-2">Liquidar Deuda de {loan.debtor}</p>
-                    <div className="flex gap-2 items-center">
-                        <input type="number" value={settleRate} onChange={e=>setSettleRate(e.target.value)} placeholder="Tasa de Hoy" className="flex-1 bg-slate-950 p-2 rounded text-white border border-emerald-500/30 text-sm outline-none"/>
-                        <button onClick={handleSettle} className="bg-emerald-600 px-4 py-2 rounded text-white font-bold text-sm">Cobrar</button>
-                        <button onClick={()=>setSettleId(null)} className="text-slate-400 p-2"><X size={16}/></button>
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                        <input type="number" value={settleVes} onChange={e=>setSettleVes(e.target.value)} placeholder="Bs Recibidos" className="bg-slate-950 p-2 rounded text-white border border-emerald-500/30 text-sm outline-none"/>
+                        <input type="number" value={settleRate} onChange={e=>setSettleRate(e.target.value)} placeholder="Tasa USDT Hoy" className="bg-slate-950 p-2 rounded text-white border border-emerald-500/30 text-sm outline-none"/>
                     </div>
-                    {settleRate > 0 && <p className="text-[10px] text-slate-400 mt-2">Debe pagarte <span className="text-white font-mono font-bold">{(loan.amountUsd * parseFloat(settleRate)).toFixed(2)} VES</span> hoy. (Ganancia por devaluación: +{((loan.amountUsd * parseFloat(settleRate)) - loan.initialVes).toFixed(2)} VES)</p>}
+                    
+                    {settleVes && settleRate && (
+                        <p className="text-[10px] text-slate-400 mt-2 mb-3 bg-slate-950 p-2 rounded border border-slate-800">
+                            Recuperas <span className="text-white font-mono font-bold">{(parseFloat(settleVes)/parseFloat(settleRate)).toFixed(2)} USDT</span>. 
+                            (Ganancia generada: <span className="text-emerald-400 font-bold">+${((parseFloat(settleVes)/parseFloat(settleRate)) - loan.amountUsd).toFixed(2)}</span>)
+                        </p>
+                    )}
+
+                    <div className="flex gap-2">
+                        <button onClick={()=>setSettleId(null)} className="flex-1 bg-slate-800 py-2 rounded text-slate-300 text-sm">Cancelar</button>
+                        <button onClick={handleSettle} className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2 rounded text-white font-bold text-sm flex justify-center items-center gap-1"><CornerLeftDown size={14}/> Cobrar</button>
+                    </div>
                 </div>
             ) : (
                 <div className="flex justify-between items-center">
-                    <div><p className="text-sm font-bold text-white flex items-center gap-2"><User size={14} className="text-slate-500"/> {loan.debtor}</p><p className="text-[10px] text-slate-500 mt-1">Prestado: {loan.initialVes?.toFixed(2)} VES a Tasa {loan.initialRate}</p></div>
-                    <div className="text-right"><span className="font-mono text-lg font-black text-pink-400 block">${safeNum(loan.amountUsd).toFixed(2)}</span><button onClick={() => setSettleId(loan.id)} className="text-[10px] bg-slate-800 text-slate-300 px-3 py-1 rounded-full mt-1 border border-slate-700 hover:bg-emerald-600 hover:text-white transition-colors">Recibir Pago</button></div>
+                    <div>
+                        <p className="text-sm font-bold text-white flex items-center gap-2"><User size={14} className="text-slate-500"/> {loan.debtor}</p>
+                        <p className="text-[10px] text-slate-500 mt-1">Salió a Tasa: {loan.initialRate}</p>
+                    </div>
+                    <div className="text-right">
+                        <span className="font-mono text-lg font-black text-pink-400 block">${safeNum(loan.amountUsd).toFixed(2)}</span>
+                        <button onClick={() => setSettleId(loan.id)} className="text-[10px] bg-slate-800 text-slate-300 px-3 py-1 rounded-full mt-1 border border-slate-700 hover:bg-emerald-600 hover:text-white transition-colors">
+                            Recibir Pago
+                        </button>
+                    </div>
                 </div>
             )}
           </div>
