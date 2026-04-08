@@ -240,7 +240,7 @@ export default function App() {
                 <Activity size={32} className="text-white" />
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
-            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.5 Analítica Histórica</span></div>
+            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.6 Historial Extendido</span></div>
             <div className="space-y-3">
                 <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
@@ -326,6 +326,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
   const [snapRate, setSnapRate] = useState(inventory.avgPrice || 40);
   const [snapDate, setSnapDate] = useState(getLocalDateString());
   const [snapNote, setSnapNote] = useState('');
+  const [visibleItems, setVisibleItems] = useState(15); // NUEVO: Control de paginación visual
 
   useEffect(() => { setSnapUsdt(inventory.usdt); setSnapVes(inventory.ves); setSnapRate(inventory.avgPrice || 40); }, [inventory]);
 
@@ -363,39 +364,90 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
        {subTab === 'gasto' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} forcedMode="expense" isGuest={isGuest} />}
        {subTab === 'micro' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} isGuest={isGuest} />}
 
-       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mt-6">Actividad Reciente</h3>
+       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mt-6">Historial Operativo</h3>
        <div className="space-y-3">
            {(() => {
-               const mixed = [ ...snapshots.map(s => ({ ...s, isSnap: true, time: s.createdAt?.seconds || Date.now()/1000 })), ...transactions.map(t => ({ ...t, isSnap: false, time: t.createdAt?.seconds || Date.now()/1000 })) ].sort((a,b) => b.time - a.time).slice(0, 15);
+               // 1. Mezclar y ordenar todo el historial
+               const mixed = [ 
+                   ...snapshots.map(s => ({ ...s, isSnap: true, time: s.createdAt?.seconds || Date.now()/1000 })), 
+                   ...transactions.map(t => ({ ...t, isSnap: false, time: t.createdAt?.seconds || Date.now()/1000 })) 
+               ].sort((a,b) => b.time - a.time);
+               
+               // 2. Limitar según el botón "Ver Más"
+               const visibleHistory = mixed.slice(0, visibleItems);
+               const hasMoreHistory = visibleHistory.length < mixed.length;
+
+               // Función auxiliar para fechas amigables
+               const formatDateHeader = (timestamp) => {
+                   const d = new Date(timestamp * 1000);
+                   const today = new Date();
+                   const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+                   if (d.toDateString() === today.toDateString()) return 'Hoy';
+                   if (d.toDateString() === yesterday.toDateString()) return 'Ayer';
+                   return d.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
+               };
+
                if (mixed.length === 0) return <p className="text-slate-600 text-center py-6">Sin registros.</p>;
-               return mixed.map(item => {
-                   if (item.isSnap) {
-                       return (
-                           <div key={`snap-${item.id}`} className="bg-slate-800/40 p-3 rounded-xl border border-blue-500/20 flex justify-between items-center">
-                               <div className="flex items-center gap-3"><div className="p-2 rounded-full bg-blue-500/20 text-blue-400"><Save size={16}/></div><div><p className="font-bold text-sm text-blue-100">Cierre de Caja</p><p className="text-[10px] text-slate-400">{item.date} {item.note ? `- ${item.note}` : ''}</p></div></div>
-                               <div className="text-right"><p className="font-mono font-bold text-emerald-400">${safeNum(item.netEquityUsdt).toFixed(2)}</p><p className="text-[10px] text-slate-500">Patrimonio</p></div>
-                           </div>
-                       );
-                   } else {
-                       return (
-                           <div key={`tx-${item.id}`} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
-                             <div className="flex items-center gap-3">
-                               <div className={`p-2 rounded-full ${item.type === 'sell' ? 'bg-red-500/20 text-red-400' : item.type === 'buy' ? 'bg-emerald-500/20 text-emerald-400' : item.type === 'capital' ? 'bg-purple-500/20 text-purple-400' : item.type === 'expense' ? 'bg-red-500/20 text-red-400' : 'bg-orange-500/20 text-orange-400'}`}>
-                                 {item.type === 'sell' ? <ArrowUpRight size={16}/> : item.type === 'buy' ? <ArrowDownLeft size={16}/> : item.type === 'capital' ? <PlusCircle size={16}/> : item.type === 'expense' ? <TrendingDown size={16}/> : <RefreshCw size={16}/>}
-                               </div>
-                               <div>
-                                 <p className="font-bold text-sm text-slate-200">{item.type === 'expense' && item.category ? item.category : item.type === 'sell' ? 'Venta USDT' : item.type === 'buy' ? 'Compra USDT' : item.type === 'capital' ? 'Fondeo' : item.type === 'swap' ? 'Swap' : 'Gasto'}</p>
-                                 <p className="text-[10px] text-slate-500">{item.type === 'expense' ? `${item.description || 'Sin nota'} ${item.currency === 'VES' && item.rate ? `(Tasa: ${item.rate})` : ''}` : `Tasa: ${safeNum(item.rate)}`}</p>
-                               </div>
-                             </div>
-                             <div className="flex items-center gap-3">
-                               <div className="text-right"><p className={`font-mono font-bold ${item.type === 'expense' ? 'text-red-400' : 'text-slate-200'}`}>{item.type === 'expense' ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountBS).toLocaleString()}`) : item.type === 'capital' ? `+$${safeNum(item.amount)}` : `$${safeNum(item.amountUSDT).toFixed(2)}`}</p></div>
-                               <button onClick={() => onDeleteTx(item)} className="p-2 text-slate-700 hover:text-red-500"><Trash2 size={14} /></button>
-                             </div>
-                           </div>
-                       );
-                   }
-               });
+               
+               let lastDateHeader = null;
+
+               return (
+                   <>
+                       {visibleHistory.map(item => {
+                           const dateHeader = formatDateHeader(item.time);
+                           const showHeader = dateHeader !== lastDateHeader;
+                           lastDateHeader = dateHeader;
+
+                           return (
+                               <React.Fragment key={`${item.isSnap ? 'snap' : 'tx'}-${item.id}`}>
+                                   {/* Separador de Fecha */}
+                                   {showHeader && (
+                                       <div className="flex items-center gap-3 mt-6 mb-2">
+                                           <div className="h-px bg-slate-800 flex-1"></div>
+                                           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{dateHeader}</span>
+                                           <div className="h-px bg-slate-800 flex-1"></div>
+                                       </div>
+                                   )}
+                                   
+                                   {/* Tarjeta del Item */}
+                                   {item.isSnap ? (
+                                       <div className="bg-slate-800/40 p-3 rounded-xl border border-blue-500/20 flex justify-between items-center">
+                                           <div className="flex items-center gap-3"><div className="p-2 rounded-full bg-blue-500/20 text-blue-400"><Save size={16}/></div><div><p className="font-bold text-sm text-blue-100">Cierre de Caja</p><p className="text-[10px] text-slate-400">{item.date} {item.note ? `- ${item.note}` : ''}</p></div></div>
+                                           <div className="text-right"><p className="font-mono font-bold text-emerald-400">${safeNum(item.netEquityUsdt).toFixed(2)}</p><p className="text-[10px] text-slate-500">Patrimonio</p></div>
+                                       </div>
+                                   ) : (
+                                       <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
+                                         <div className="flex items-center gap-3">
+                                           <div className={`p-2 rounded-full ${item.type === 'sell' ? 'bg-red-500/20 text-red-400' : item.type === 'buy' ? 'bg-emerald-500/20 text-emerald-400' : item.type === 'capital' ? 'bg-purple-500/20 text-purple-400' : item.type === 'expense' ? 'bg-red-500/20 text-red-400' : 'bg-orange-500/20 text-orange-400'}`}>
+                                             {item.type === 'sell' ? <ArrowUpRight size={16}/> : item.type === 'buy' ? <ArrowDownLeft size={16}/> : item.type === 'capital' ? <PlusCircle size={16}/> : item.type === 'expense' ? <TrendingDown size={16}/> : <RefreshCw size={16}/>}
+                                           </div>
+                                           <div>
+                                             <p className="font-bold text-sm text-slate-200">{item.type === 'expense' && item.category ? item.category : item.type === 'sell' ? 'Venta USDT' : item.type === 'buy' ? 'Compra USDT' : item.type === 'capital' ? 'Fondeo' : item.type === 'swap' ? 'Swap' : 'Gasto'}</p>
+                                             <p className="text-[10px] text-slate-500">{item.type === 'expense' ? `${item.description || 'Sin nota'} ${item.currency === 'VES' && item.rate ? `(Tasa: ${item.rate})` : ''}` : `Tasa: ${safeNum(item.rate)}`}</p>
+                                           </div>
+                                         </div>
+                                         <div className="flex items-center gap-3">
+                                           <div className="text-right"><p className={`font-mono font-bold ${item.type === 'expense' ? 'text-red-400' : 'text-slate-200'}`}>{item.type === 'expense' ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountBS).toLocaleString()}`) : item.type === 'capital' ? `+$${safeNum(item.amount)}` : `$${safeNum(item.amountUSDT).toFixed(2)}`}</p></div>
+                                           <button onClick={() => onDeleteTx(item)} className="p-2 text-slate-700 hover:text-red-500"><Trash2 size={14} /></button>
+                                         </div>
+                                       </div>
+                                   )}
+                               </React.Fragment>
+                           );
+                       })}
+                       
+                       {/* Control de Expansión */}
+                       <div className="pt-6 pb-2 text-center">
+                           {hasMoreHistory ? (
+                               <button onClick={() => setVisibleItems(prev => prev + 15)} className="text-xs font-bold text-slate-300 bg-slate-800 px-5 py-2.5 rounded-full border border-slate-700 hover:bg-blue-600 hover:text-white hover:border-blue-500 transition-all shadow-lg flex items-center justify-center gap-2 mx-auto">
+                                   Ver más movimientos <ChevronDown size={14}/>
+                               </button>
+                           ) : (
+                               <p className="text-[10px] text-slate-500 italic">Has llegado al inicio de tus registros.</p>
+                           )}
+                       </div>
+                   </>
+               );
            })()}
        </div>
     </div>
