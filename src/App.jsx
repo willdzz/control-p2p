@@ -73,7 +73,6 @@ export default function App() {
 
     const safetyTimeout = setTimeout(() => setLoading(false), 5000);
 
-    // Quitamos el orderBy simple de Firebase para manejar el orden compuesto en el frontend (V4.8)
     const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'));
     const unsubTx = onSnapshot(qTx, (snap) => setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
 
@@ -144,7 +143,7 @@ export default function App() {
     }
     
     data.avgPriceAtMoment = newInv.avgPrice;
-    data.dateStr = data.dateStr || getLocalDateString(); // V4.8: Respeta la fecha provista o usa hoy
+    data.dateStr = data.dateStr || getLocalDateString();
 
     await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), { ...data, createdAt: serverTimestamp() });
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
@@ -368,9 +367,11 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
 
   return (
     <div className="space-y-4 pb-20">
+       {/* FIX: Se restaron los botones originales: Cierre, Gastos y Micro-P2P */}
        <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
            <button onClick={()=>setSubTab('cierre')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${subTab==='cierre'?'bg-blue-600 text-white':'text-slate-500'}`}>Cierre Diario</button>
-           <button onClick={()=>setSubTab('gasto')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${subTab==='gasto'?'bg-red-600 text-white':'text-slate-500'}`}>Operaciones</button>
+           <button onClick={()=>setSubTab('gasto')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${subTab==='gasto'?'bg-red-600 text-white':'text-slate-500'}`}>Gastos</button>
+           <button onClick={()=>setSubTab('micro')} className={`flex-1 py-2 text-[10px] font-bold rounded-lg transition-colors ${subTab==='micro'?'bg-slate-700 text-white':'text-slate-600'}`}>Micro-P2P</button>
        </div>
 
        {subTab === 'cierre' && (
@@ -388,12 +389,13 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                </div>
            </div>
        )}
-       {subTab === 'gasto' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} isGuest={isGuest} />}
+       {/* FIX: Se mantienen los llamados correctos al componente TradeForm forzando el modo de gasto o dejándolo libre para Micro */}
+       {subTab === 'gasto' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} forcedMode="expense" isGuest={isGuest} />}
+       {subTab === 'micro' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} isGuest={isGuest} />}
 
        <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mt-6">Historial Operativo</h3>
        <div className="space-y-3">
            {(() => {
-               // V4.8: Ordenamiento compuesto inteligente. Primero por Fecha Contable (dateStr), luego por momento de guardado.
                const mixed = [ 
                    ...snapshots.map(s => ({ ...s, isSnap: true })), 
                    ...transactions.map(t => ({ ...t, isSnap: false })) 
@@ -411,7 +413,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
 
                const formatDateHeader = (dateString) => {
                    if (!dateString) return 'Desconocido';
-                   const d = new Date(dateString + 'T12:00:00'); // Evita saltos de zona horaria
+                   const d = new Date(dateString + 'T12:00:00'); 
                    const today = new Date();
                    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
                    if (d.toDateString() === today.toDateString()) return 'Hoy';
@@ -517,7 +519,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
   );
 }
 
-// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.8) ---
+// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.8.1) ---
 function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals, isGuest }) {
   const [viewMonth, setViewMonth] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); 
   const [editingGoals, setEditingGoals] = useState(false);
@@ -624,7 +626,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
           }));
   }, [snapshots]);
 
-  // V4.8 FIX CSS: Calculamos el máximo absoluto (positivo o negativo) para que la barra nunca desborde
   const maxProfitVal = Math.max(...monthData.days.map(d => d.profit), 10);
   const minProfitVal = Math.min(...monthData.days.map(d => d.profit), -10);
   const maxAbsoluteProfit = Math.max(maxProfitVal, Math.abs(minProfitVal));
