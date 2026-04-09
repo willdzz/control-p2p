@@ -12,7 +12,7 @@ import {
   Utensils, Zap, Shirt, Heart, Car, HelpCircle, Cross, Save, X, AlertTriangle, Info, 
   Activity, User, RefreshCcw, Settings, BarChart3, ArrowRight, Lock, ToggleLeft, ToggleRight, 
   Target, Pencil, Scale, MessageCircle, Loader2, CheckCircle2, ChevronDown, ChevronUp, DollarSign,
-  Store, ShoppingBag, Gamepad2, ChevronLeft, ChevronRight, CornerRightUp, CornerLeftDown
+  Store, ShoppingBag, Gamepad2, ChevronLeft, ChevronRight, CornerRightUp, CornerLeftDown, CalendarDays
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -73,10 +73,11 @@ export default function App() {
 
     const safetyTimeout = setTimeout(() => setLoading(false), 5000);
 
-    const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), orderBy('createdAt', 'desc'));
+    // Quitamos el orderBy simple de Firebase para manejar el orden compuesto en el frontend (V4.8)
+    const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'));
     const unsubTx = onSnapshot(qTx, (snap) => setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
 
-    const qSnap = query(collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots'), orderBy('date', 'desc'));
+    const qSnap = query(collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots'));
     const unsubSnap = onSnapshot(qSnap, (snap) => setSnapshots(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
 
     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
@@ -136,19 +137,14 @@ export default function App() {
         newInv.usdt = totalUSDT;
       }
     } else if (data.type === 'loan_out') {
-      // V4.7: Salida de capital por préstamo
-      if (data.currency === 'USDT') {
-        newInv.usdt -= safeNum(data.amountUSDT);
-      } else {
-        newInv.ves -= safeNum(data.amountVES);
-      }
+      if (data.currency === 'USDT') newInv.usdt -= safeNum(data.amountUSDT);
+      else newInv.ves -= safeNum(data.amountVES);
     } else if (data.type === 'loan_in') {
-      // V4.7: Retorno de capital (Se asume que siempre se cobra en Bs localmente)
       newInv.ves += safeNum(data.amountVES);
     }
     
     data.avgPriceAtMoment = newInv.avgPrice;
-    data.dateStr = getLocalDateString(); 
+    data.dateStr = data.dateStr || getLocalDateString(); // V4.8: Respeta la fecha provista o usa hoy
 
     await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), { ...data, createdAt: serverTimestamp() });
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
@@ -246,7 +242,7 @@ export default function App() {
 
   const handleLogout = () => { if (user.role === 'guest') setUser(null); else signOut(auth); setView('cierres'); };
 
-  // CÁLCULO DE LA TRINIDAD CONTABLE (V4.7)
+  // CÁLCULO DE LA TRINIDAD CONTABLE
   const deferredCapital = useMemo(() => loans.reduce((acc, l) => acc + safeNum(l.amountUsd), 0), [loans]);
   const operativeEquity = (safeNum(inventory.usdt) + (safeNum(inventory.ves) / (safeNum(inventory.avgPrice) || 1)));
   const globalEquity = operativeEquity + deferredCapital;
@@ -262,7 +258,7 @@ export default function App() {
                 <Activity size={32} className="text-white" />
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
-            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.7 Finanzas Avanzadas</span></div>
+            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.8 Fix & Fechas</span></div>
             <div className="space-y-3">
                 <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
@@ -295,7 +291,6 @@ export default function App() {
                 </div>
             </div>
 
-            {/* TRINIDAD CONTABLE (V4.7) */}
             {user.role === 'guest' ? (
                 <p className="text-xl font-bold text-slate-500 mt-1">Simulación Activa</p>
             ) : (
@@ -375,13 +370,12 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
     <div className="space-y-4 pb-20">
        <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
            <button onClick={()=>setSubTab('cierre')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${subTab==='cierre'?'bg-blue-600 text-white':'text-slate-500'}`}>Cierre Diario</button>
-           <button onClick={()=>setSubTab('gasto')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${subTab==='gasto'?'bg-red-600 text-white':'text-slate-500'}`}>Gastos</button>
-           <button onClick={()=>setSubTab('micro')} className={`flex-1 py-2 text-[10px] font-bold rounded-lg transition-colors ${subTab==='micro'?'bg-slate-700 text-white':'text-slate-600'}`}>Micro-P2P</button>
+           <button onClick={()=>setSubTab('gasto')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${subTab==='gasto'?'bg-red-600 text-white':'text-slate-500'}`}>Operaciones</button>
        </div>
 
        {subTab === 'cierre' && (
            <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in zoom-in-95">
-               <h3 className="text-xs text-blue-400 font-bold uppercase mb-4 flex items-center gap-2"><Save size={14}/> Registrar Caja Operativa (Auditoría)</h3>
+               <h3 className="text-xs text-blue-400 font-bold uppercase mb-4 flex items-center gap-2"><Save size={14}/> Registrar Caja Operativa</h3>
                <div className="space-y-4">
                    <div><label className="text-[10px] text-slate-400 uppercase font-bold mb-1 block">Fecha del Cierre</label><input type="date" value={snapDate} onChange={e=>setSnapDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 text-sm [color-scheme:dark]"/></div>
                    <div className="grid grid-cols-2 gap-3">
@@ -394,22 +388,30 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                </div>
            </div>
        )}
-       {subTab === 'gasto' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} forcedMode="expense" isGuest={isGuest} />}
-       {subTab === 'micro' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} isGuest={isGuest} />}
+       {subTab === 'gasto' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} isGuest={isGuest} />}
 
        <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mt-6">Historial Operativo</h3>
        <div className="space-y-3">
            {(() => {
+               // V4.8: Ordenamiento compuesto inteligente. Primero por Fecha Contable (dateStr), luego por momento de guardado.
                const mixed = [ 
-                   ...snapshots.map(s => ({ ...s, isSnap: true, time: s.createdAt?.seconds || Date.now()/1000 })), 
-                   ...transactions.map(t => ({ ...t, isSnap: false, time: t.createdAt?.seconds || Date.now()/1000 })) 
-               ].sort((a,b) => b.time - a.time);
+                   ...snapshots.map(s => ({ ...s, isSnap: true })), 
+                   ...transactions.map(t => ({ ...t, isSnap: false })) 
+               ].sort((a, b) => {
+                   const dateA = a.dateStr || a.date || "1970-01-01";
+                   const dateB = b.dateStr || b.date || "1970-01-01";
+                   if (dateA !== dateB) return new Date(dateB) - new Date(dateA);
+                   const timeA = a.createdAt?.seconds || 0;
+                   const timeB = b.createdAt?.seconds || 0;
+                   return timeB - timeA;
+               });
                
                const visibleHistory = mixed.slice(0, visibleItems);
                const hasMoreHistory = visibleHistory.length < mixed.length;
 
-               const formatDateHeader = (timestamp) => {
-                   const d = new Date(timestamp * 1000);
+               const formatDateHeader = (dateString) => {
+                   if (!dateString) return 'Desconocido';
+                   const d = new Date(dateString + 'T12:00:00'); // Evita saltos de zona horaria
                    const today = new Date();
                    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
                    if (d.toDateString() === today.toDateString()) return 'Hoy';
@@ -424,7 +426,8 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                return (
                    <>
                        {visibleHistory.map(item => {
-                           const dateHeader = formatDateHeader(item.time);
+                           const semanticDate = item.dateStr || item.date;
+                           const dateHeader = formatDateHeader(semanticDate);
                            const showHeader = dateHeader !== lastDateHeader;
                            lastDateHeader = dateHeader;
 
@@ -514,7 +517,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
   );
 }
 
-// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.7) ---
+// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.8) ---
 function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals, isGuest }) {
   const [viewMonth, setViewMonth] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); 
   const [editingGoals, setEditingGoals] = useState(false);
@@ -582,16 +585,12 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
           const sumDeposits = dayDeposits.reduce((acc, t) => acc + (t.currency === 'USDT' ? safeNum(t.amount) : safeNum(t.amount)/40), 0);
           totalDeposits += sumDeposits;
 
-          // V4.7: Extraer préstamos para no dañar la matemática operativa
           const dayLoansOut = transactions.filter(t => t.type === 'loan_out' && t.dateStr === dateStr).reduce((acc, t) => acc + safeNum(t.amountUSDT), 0);
           const dayLoansInPrincipal = transactions.filter(t => t.type === 'loan_in' && t.dateStr === dateStr).reduce((acc, t) => acc + safeNum(t.amountUSDT), 0);
           totalLoansOut += dayLoansOut;
 
           let dailyProfit = 0;
           if (daySnaps.length > 0) {
-             // Fórmula blindada: El snapshot solo guarda Caja Operativa. 
-             // Prestar (-) baja la caja (no es pérdida, se suma de vuelta). 
-             // Cobrar (+) sube la caja (se resta el principal retornado, dejando solo la ganancia por devaluación).
              dailyProfit = (endOfDayEquity - currentEquity) + sumExpenses + dayLoansOut - sumDeposits - dayLoansInPrincipal;
              currentEquity = endOfDayEquity; 
           } else {
@@ -625,7 +624,11 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
           }));
   }, [snapshots]);
 
-  const maxProfit = Math.max(...monthData.days.map(d => d.profit), 10);
+  // V4.8 FIX CSS: Calculamos el máximo absoluto (positivo o negativo) para que la barra nunca desborde
+  const maxProfitVal = Math.max(...monthData.days.map(d => d.profit), 10);
+  const minProfitVal = Math.min(...monthData.days.map(d => d.profit), -10);
+  const maxAbsoluteProfit = Math.max(maxProfitVal, Math.abs(minProfitVal));
+  
   const maxMacroEquity = Math.max(...macroTrend.map(m => m.equity), 100);
 
   const targetAmount = goals.monthly;
@@ -670,7 +673,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
                       <span className="text-blue-400 font-mono text-xs">+{monthData.totalDeposits.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                      <span className="text-slate-400 text-[10px] uppercase">Capital Prestado (Diferido)</span>
+                      <span className="text-slate-400 text-[10px] uppercase" title="Dinero que prestaste este mes">Volumen Prestado (Histórico)</span>
                       <span className="text-pink-400 font-mono text-xs">-{monthData.totalLoansOut.toFixed(2)}</span>
                   </div>
 
@@ -720,8 +723,8 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
                   {monthData.days.map((d, i) => (
                       <div key={i} className="flex-1 flex flex-col justify-end items-center group relative h-full">
                           <div className="absolute bottom-full mb-1 opacity-0 group-hover:opacity-100 bg-slate-800 text-xs text-white p-1 rounded whitespace-nowrap z-20 pointer-events-none transition-opacity">Dia {d.label}: ${d.profit.toFixed(1)}</div>
-                          {d.profit > 0 && <div className="w-full bg-emerald-500/80 rounded-t-sm hover:bg-emerald-400 transition-colors" style={{ height: `${(d.profit / maxProfit) * 100}%`, minHeight: '4px' }}></div>}
-                          {d.profit < 0 && <div className="w-full bg-red-500/80 rounded-b-sm absolute top-full mt-0.5" style={{ height: `${(Math.abs(d.profit) / maxProfit) * 100}%`, minHeight: '4px' }}></div>}
+                          {d.profit > 0 && <div className="w-full bg-emerald-500/80 rounded-t-sm hover:bg-emerald-400 transition-colors" style={{ height: `${(d.profit / maxAbsoluteProfit) * 100}%`, minHeight: '4px' }}></div>}
+                          {d.profit < 0 && <div className="w-full bg-red-500/80 rounded-b-sm absolute top-full mt-0.5" style={{ height: `${(Math.abs(d.profit) / maxAbsoluteProfit) * 100}%`, minHeight: '4px' }}></div>}
                           {(d.label % 5 === 0 || d.label === 1) && <span className="text-[8px] text-slate-600 mt-1 absolute top-full pt-1">{d.label}</span>}
                       </div>
                   ))}
@@ -844,8 +847,8 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
           type: 'loan_in', 
           debtor: loanToSettle.debtor, 
           amountVES: valVes, 
-          amountUSDT: loanToSettle.amountUsd, // El principal que retorna (para métricas)
-          devaluationProfit: profit, // La ganancia pura
+          amountUSDT: loanToSettle.amountUsd, 
+          devaluationProfit: profit, 
           rate: valRate 
       });
 
@@ -1019,19 +1022,33 @@ function SimpleGapCalculator() {
 }
 
 function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
-  const [mode, setMode] = useState(forcedMode || 'buy'); const [inputVal, setInputVal] = useState(''); const [rate, setRate] = useState(''); const [expenseCategory, setExpenseCategory] = useState('Comida'); const [expenseNote, setExpenseNote] = useState(''); const [expenseCurrency, setExpenseCurrency] = useState('VES');
+  const [mode, setMode] = useState(forcedMode || 'buy'); 
+  const [inputVal, setInputVal] = useState(''); 
+  const [rate, setRate] = useState(''); 
+  const [expenseCategory, setExpenseCategory] = useState('Comida'); 
+  const [expenseNote, setExpenseNote] = useState(''); 
+  const [expenseCurrency, setExpenseCurrency] = useState('VES');
+  
+  // V4.8: La Máquina del Tiempo (Selector de Fecha)
+  const [tradeDate, setTradeDate] = useState(getLocalDateString()); 
+
   const valInput = parseFloat(inputVal) || 0; const valRate = parseFloat(rate) || 0;
   let calcUSDT = 0; let calcBS = 0; let feeUSDT_Calculated = 0;
+  
   if (mode === 'buy') { calcUSDT = valInput; calcBS = valInput * valRate; } else if (mode === 'sell') { calcBS = valInput; calcUSDT = valRate > 0 ? valInput / valRate : 0; }
+  
   const handleSubmit = () => {
-    if (mode === 'expense') { return onTrade({ type: 'expense', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : 0, rate: expenseCurrency === 'VES' ? valRate : 0, category: expenseCategory, description: expenseNote }); }
-    if (mode === 'capital') return onTrade({ type: 'capital', amount: valInput, currency: 'USDT', rate: valRate });
-    onTrade({ type: mode, amountUSDT: calcUSDT, totalBS: calcBS, rate: valRate, feeUSDT: feeUSDT_Calculated });
+    if (mode === 'expense') { return onTrade({ type: 'expense', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : 0, rate: expenseCurrency === 'VES' ? valRate : 0, category: expenseCategory, description: expenseNote, dateStr: tradeDate }); }
+    if (mode === 'capital') return onTrade({ type: 'capital', amount: valInput, currency: 'USDT', rate: valRate, dateStr: tradeDate });
+    onTrade({ type: mode, amountUSDT: calcUSDT, totalBS: calcBS, rate: valRate, feeUSDT: feeUSDT_Calculated, dateStr: tradeDate });
   };
+
   const categories = [{ id: 'Comida', icon: <Utensils size={16}/>, bg: 'bg-orange-600', border: 'border-orange-500' }, { id: 'Bodega', icon: <Store size={16}/>, bg: 'bg-amber-600', border: 'border-amber-500' }, { id: 'Servicios', icon: <Zap size={16}/>, bg: 'bg-yellow-600', border: 'border-yellow-500' }, { id: 'Compras', icon: <ShoppingBag size={16}/>, bg: 'bg-emerald-600', border: 'border-emerald-500' }, { id: 'Ropa', icon: <Shirt size={16}/>, bg: 'bg-pink-600', border: 'border-pink-500' }, { id: 'Ocio', icon: <Gamepad2 size={16}/>, bg: 'bg-red-600', border: 'border-red-500' }, { id: 'Transporte', icon: <Car size={16}/>, bg: 'bg-blue-600', border: 'border-blue-500' }, { id: 'Diezmo', icon: <Heart size={16}/>, bg: 'bg-indigo-600', border: 'border-indigo-500' }, { id: 'Otros', icon: <HelpCircle size={16}/>, bg: 'bg-slate-600', border: 'border-slate-500' }];
+  
   return (
     <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in slide-in-from-bottom-8">
       {!forcedMode && (<div className="flex bg-slate-950 p-1 rounded-lg mb-6 gap-1">{['buy', 'sell', 'capital'].map(m => (<button key={m} onClick={() => setMode(m)} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded-md transition-colors ${mode === m ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>{m === 'buy' ? 'Comprar' : m === 'sell' ? 'Vender' : 'Fondeo'}</button>))}</div>)}
+      
       {mode === 'expense' ? (
         <div className="space-y-4">
             <div className="flex bg-slate-950 p-1 rounded-lg"><button onClick={() => setExpenseCurrency('VES')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${expenseCurrency === 'VES' ? 'bg-slate-800 text-white' : 'text-slate-600'}`}>En Bolívares</button><button onClick={() => setExpenseCurrency('USDT')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${expenseCurrency === 'USDT' ? 'bg-slate-800 text-emerald-400' : 'text-slate-600'}`}>En USDT</button></div>
@@ -1045,6 +1062,13 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
       ) : (
         <div className="space-y-4"><div><label className="text-[10px] text-slate-400 uppercase font-bold">{mode === 'buy' ? 'USDT a Comprar' : mode === 'sell' ? 'Bs Recibidos' : 'Monto (USDT)'}</label><input type="number" step="0.01" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/></div><div><label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Referencia</label><input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none"/></div></div>
       )}
+
+      {/* V4.8 Control de Fecha (Aparece en todos los modos) */}
+      <div className="mt-4 pt-4 border-t border-slate-800">
+          <label className="text-[10px] text-slate-400 uppercase font-bold mb-1 flex items-center gap-1"><CalendarDays size={12}/> Fecha Contable</label>
+          <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 text-sm [color-scheme:dark]"/>
+      </div>
+
       <div className="flex gap-3 mt-6"><button onClick={onCancel} className="flex-1 py-3 bg-slate-800 rounded-lg text-slate-400 font-bold">Cancelar</button><button onClick={handleSubmit} className="flex-1 py-3 bg-blue-600 rounded-lg text-white font-bold shadow-lg">Guardar</button></div>
     </div>
   );
