@@ -193,7 +193,7 @@ export default function App() {
          newInv.usdt = prevUSDT;
          newInv.avgPrice = prevUSDT > 0 ? (currentTotalVal - costWas) / prevUSDT : 0;
        }
-    } else if (tx.type === 'withdraw') { // V4.9: Reversión de Retiro
+    } else if (tx.type === 'withdraw') {
        if (tx.currency === 'USDT' || tx.amountUSDT > 0) newInv.usdt += safeNum(tx.amountUSDT);
        else newInv.ves += safeNum(tx.amountBS);
     } else if (tx.type === 'loan_out') {
@@ -535,7 +535,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
   );
 }
 
-// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.9 -> V4.10) ---
+// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.10) ---
 function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals, isGuest }) {
   const [viewMonth, setViewMonth] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); 
   const [editingGoals, setEditingGoals] = useState(false);
@@ -572,7 +572,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
       let totalPeriodProfit = 0;
       let totalPeriodExpenses = 0;
       let totalDeposits = 0;
-      let totalWithdrawals = 0; // V4.9 Retiros
+      let totalWithdrawals = 0;
       let totalLoansOut = 0;
 
       const monthExpenses = transactions.filter(t => {
@@ -646,7 +646,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
           }));
   }, [snapshots]);
 
-  // V4.9 FIX EJE X FLOTANTE: El contenedor se divide exactamente a la mitad (0).
   const maxProfitVal = Math.max(...monthData.days.map(d => d.profit), 10);
   const minProfitVal = Math.min(...monthData.days.map(d => d.profit), -10);
   const maxAbsoluteProfit = Math.max(maxProfitVal, Math.abs(minProfitVal));
@@ -744,12 +743,10 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
               <div className="flex justify-between items-center mb-6">
                   <h3 className="text-xs font-bold text-emerald-400 uppercase">Rendimiento Diario</h3>
               </div>
-              {/* V4.9 FIX: Eje X Flotante (Línea de 0 en el centro exacto) */}
               <div className="h-48 flex items-center justify-between gap-0.5 relative pt-4 pb-4">
                   <div className="absolute w-full border-t border-slate-700 top-1/2 left-0 z-0"></div>
                   {monthData.days.map((d, i) => {
                       const isPositive = d.profit >= 0;
-                      // Max height for any bar is 50% of the container
                       const barHeightPercent = (Math.abs(d.profit) / (maxAbsoluteProfit || 1)) * 50; 
                       return (
                           <div key={i} className="flex-1 flex flex-col justify-center relative h-full group">
@@ -780,7 +777,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
             </div>
             <div className="space-y-4">
               {Object.keys(monthData.byCategory).length === 0 && <p className="text-center text-xs text-slate-600">Sin fugas registradas en {monthName}.</p>}
-              {/* V4.10 Nuevas Categorias (Frutas, Club, Regalos) */}
               {['Comida', 'Bodega', 'Frutas', 'Club', 'Servicios', 'Compras', 'Ropa', 'Ocio', 'Transporte', 'Salud', 'Caridad', 'Regalos', 'Viajes', 'Diezmo', 'Otros'].map(catId => {
                 const amount = monthData.byCategory[catId] || 0;
                 const percent = monthData.totalPeriodExpenses > 0 ? (amount / monthData.totalPeriodExpenses) * 100 : 0;
@@ -841,10 +837,10 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
   const [currency, setCurrency] = useState('VES');
   const [amount, setAmount] = useState(''); 
   const [rateP2P, setRateP2P] = useState(''); 
-  const [loanDate, setLoanDate] = useState(getLocalDateString()); // V4.10: Fecha para préstamos
+  const [loanDate, setLoanDate] = useState(getLocalDateString()); 
   
   const [settleId, setSettleId] = useState(null); 
-  const [settleCurrency, setSettleCurrency] = useState('USDT'); // V4.10: Cobro inteligente
+  const [settleCurrency, setSettleCurrency] = useState('USDT'); 
   const [settleVes, setSettleVes] = useState('');
   const [settleUsdt, setSettleUsdt] = useState('');
   const [settleRate, setSettleRate] = useState('');
@@ -856,11 +852,9 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
     const valAmount = parseFloat(amount);
     const valRate = parseFloat(rateP2P);
     
-    // Cálculo inteligente para extraer capital
     const amountUsd = currency === 'USDT' ? valAmount : valAmount / valRate;
     const amountVes = currency === 'VES' ? valAmount : valAmount * valRate;
 
-    // 1. Debitar del Saldo Operativo
     await onTrade({ 
         type: 'loan_out', 
         debtor: name, 
@@ -868,17 +862,16 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
         amountUSDT: amountUsd, 
         amountVES: amountVes, 
         rate: valRate,
-        dateStr: loanDate // V4.10: Envía fecha seleccionada
+        dateStr: loanDate 
     });
 
-    // 2. Registrar la cuenta por cobrar
     await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), { 
         debtor: name, 
         amountUsd: amountUsd, 
         initialRate: valRate, 
         initialVes: amountVes, 
         active: true, 
-        dateStr: loanDate, // V4.10: Anclaje de fecha
+        dateStr: loanDate, 
         createdAt: serverTimestamp() 
     });
     setName(''); setAmount(''); setRateP2P('');
@@ -891,7 +884,6 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
       let valVes = 0;
       let valRate = 1;
 
-      // V4.10: Lógica de Cobro Inteligente USDT vs VES
       if (settleCurrency === 'VES') {
           if(!settleRate || !settleVes) return;
           valVes = parseFloat(settleVes);
@@ -902,15 +894,12 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
           receivedUsd = parseFloat(settleUsdt);
       }
 
-      // Validar monto para liquidación total
-      if (!isPartial && receivedUsd < (loanToSettle.amountUsd * 0.98)) { // Tolerancia del 2%
+      if (!isPartial && receivedUsd < (loanToSettle.amountUsd * 0.98)) {
           if(!confirm("El monto es menor a la deuda total. ¿Registrar de todas formas como Liquidado?")) return;
       }
 
-      // Ganancia cambiaria (Solo calculada si el cobro es en VES y es liquidación total para evitar cálculos complejos parciales)
       const profit = (settleCurrency === 'VES' && !isPartial) ? receivedUsd - loanToSettle.amountUsd : 0;
 
-      // 1. Ingresar el capital + ganancia al Saldo Operativo
       await onTrade({ 
           type: 'loan_in', 
           debtor: loanToSettle.debtor, 
@@ -918,16 +907,14 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
           amountUSDT: receivedUsd, 
           devaluationProfit: profit, 
           rate: valRate,
-          dateStr: getLocalDateString() // El abono siempre va a la caja del día actual
+          dateStr: getLocalDateString() 
       });
 
       if (isPartial && receivedUsd < loanToSettle.amountUsd) {
-          // Abono Parcial: Actualizar documento
           await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', settleId), {
               amountUsd: loanToSettle.amountUsd - receivedUsd
           });
       } else {
-          // 2. Eliminar la cuenta por cobrar (Liquidación Total)
           await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', settleId));
       }
       setSettleId(null); setSettleRate(''); setSettleVes(''); setSettleUsdt('');
@@ -956,7 +943,6 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
               </div>
           </div>
           
-          {/* V4.10: Selector de fecha de préstamo */}
           <div>
               <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Fecha del Préstamo</label>
               <input type="date" value={loanDate} onChange={e=>setLoanDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500 [color-scheme:dark]"/>
@@ -981,7 +967,6 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
                 <div className="animate-in fade-in slide-in-from-right-4">
                     <p className="text-xs text-emerald-400 font-bold mb-2">Cobro a {loan.debtor} (Deuda: ${safeNum(loan.amountUsd).toFixed(2)})</p>
                     
-                    {/* V4.10: Selector Inteligente de Cobro */}
                     <div className="flex bg-slate-950 p-1 rounded-lg mb-2">
                         <button onClick={() => setSettleCurrency('USDT')} className={`flex-1 py-1 text-[10px] font-bold uppercase rounded ${settleCurrency === 'USDT' ? 'bg-slate-800 text-emerald-400' : 'text-slate-600'}`}>En USDT</button>
                         <button onClick={() => setSettleCurrency('VES')} className={`flex-1 py-1 text-[10px] font-bold uppercase rounded ${settleCurrency === 'VES' ? 'bg-slate-800 text-white' : 'text-slate-600'}`}>En Bs</button>
@@ -1007,7 +992,6 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
 
                     <div className="flex gap-2">
                         <button onClick={()=>setSettleId(null)} className="flex-1 bg-slate-800 py-2 rounded text-slate-300 text-sm">Cancelar</button>
-                        {/* V4.10: Botón de Abono Parcial */}
                         <button onClick={()=>handleSettle(true)} className="flex-1 bg-blue-600 hover:bg-blue-500 py-2 rounded text-white font-bold text-xs flex justify-center items-center">Abono Parcial</button>
                         <button onClick={()=>handleSettle(false)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2 rounded text-white font-bold text-xs flex justify-center items-center"><CornerLeftDown size={14}/> Liquidar</button>
                     </div>
@@ -1043,7 +1027,6 @@ function SimulatorModule() {
             <button onClick={() => setTab('cycles')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'cycles' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-500'}`}>Ciclos</button>
             <button onClick={() => setTab('telegram')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'telegram' ? 'bg-slate-800 text-blue-400 shadow-sm' : 'text-slate-500'}`}>Tele-P2P</button>
             <button onClick={() => setTab('simple')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'simple' ? 'bg-slate-800 text-emerald-400 shadow-sm' : 'text-slate-500'}`}>Brecha</button>
-            {/* V4.10 Simulador BTC */}
             <button onClick={() => setTab('btc')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'btc' ? 'bg-slate-800 text-orange-400 shadow-sm' : 'text-slate-500'}`}>BTC-Tri</button>
         </div>
       </div>
@@ -1121,7 +1104,7 @@ function SimpleGapCalculator() {
   );
 }
 
-// V4.10: Simulador BTC-Triangulación
+// V4.10: Simulador BTC-Triangulación con API CoinGecko
 function BtcTriangulationCalc() {
   const [sellUsdt, setSellUsdt] = useState(972);
   const [buyBtc, setBuyBtc] = useState(81317019.6);
@@ -1132,11 +1115,13 @@ function BtcTriangulationCalc() {
   const fetchSpotPrice = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+      const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
       const data = await response.json();
-      if (data && data.price) setSpotBtc(parseFloat(data.price));
+      if (data && data.bitcoin && data.bitcoin.usd) {
+        setSpotBtc(parseFloat(data.bitcoin.usd));
+      }
     } catch (error) {
-      console.error("Error al obtener precio de Binance:", error);
+      console.error("Error al obtener precio:", error);
     } finally {
       setIsLoading(false);
     }
@@ -1183,7 +1168,7 @@ function BtcTriangulationCalc() {
                
                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 relative">
                   <label className="text-[10px] text-slate-500 font-bold uppercase block mb-2 flex justify-between items-center">
-                    <span>3. Precio Spot BTC/USDT (Binance)</span>
+                    <span>3. Precio Spot BTC/USDT (Global)</span>
                     <button onClick={fetchSpotPrice} disabled={isLoading} className="text-orange-400 hover:text-white transition-colors bg-orange-500/10 p-1 rounded">
                       {isLoading ? <Loader2 size={12} className="animate-spin"/> : <RefreshCcw size={12}/>}
                     </button>
@@ -1227,7 +1212,6 @@ function BtcTriangulationCalc() {
   );
 }
 
-
 function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
   const [mode, setMode] = useState(forcedMode || 'buy'); 
   const [inputVal, setInputVal] = useState(''); 
@@ -1247,7 +1231,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
     if (mode === 'expense') { 
         return onTrade({ type: 'expense', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput/valRate : 0), rate: valRate, category: expenseCategory, description: expenseNote, dateStr: tradeDate }); 
     }
-    if (mode === 'withdraw') { // V4.9 Manejo del submit de Retiro
+    if (mode === 'withdraw') {
         return onTrade({ type: 'withdraw', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput/valRate : 0), rate: valRate, description: expenseNote, dateStr: tradeDate }); 
     }
     if (mode === 'capital') return onTrade({ type: 'capital', amount: valInput, currency: 'USDT', rate: valRate, dateStr: tradeDate });
@@ -1255,7 +1239,6 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
     onTrade({ type: mode, amountUSDT: calcUSDT, totalBS: calcBS, rate: valRate, feeUSDT: feeUSDT_Calculated, dateStr: tradeDate });
   };
 
-  // V4.10 Nuevas categorías añadidas
   const categories = [
       { id: 'Comida', icon: <Utensils size={16}/>, bg: 'bg-orange-600', border: 'border-orange-500' }, 
       { id: 'Bodega', icon: <Store size={16}/>, bg: 'bg-amber-600', border: 'border-amber-500' }, 
