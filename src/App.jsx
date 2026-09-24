@@ -4,7 +4,7 @@ import {
   getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged 
 } from 'firebase/auth';
 import { 
-  getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, deleteDoc, doc, setDoc, getDocs 
+  getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, deleteDoc, doc, setDoc, getDocs, updateDoc 
 } from 'firebase/firestore';
 import { 
   Wallet, TrendingUp, TrendingDown, History, Users, LogOut, Calculator, Landmark, PiggyBank, 
@@ -207,6 +207,13 @@ export default function App() {
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
   };
 
+  // V4.10: Función para borrar Cierres
+  const handleDeleteSnapshot = async (snap) => {
+    if (user.role === 'guest') return;
+    if(!confirm(`¿Estás seguro de borrar el cierre operativo del día ${snap.date}?`)) return;
+    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'snapshots', snap.id));
+  };
+
   const handleUpdateGoals = async (newGoals) => {
       if (user.role === 'guest') { setGoals(newGoals); return; }
       setGoals(newGoals);
@@ -261,7 +268,7 @@ export default function App() {
                 <Activity size={32} className="text-white" />
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
-            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.9 Corporativa</span></div>
+            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.10 Corporativa</span></div>
             <div className="space-y-3">
                 <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
@@ -332,7 +339,7 @@ export default function App() {
 
       {/* RUTAS DEL BODY */}
       <div className={view === 'simulator' ? 'p-0' : 'p-4'}>
-        {view === 'cierres' && <CierresModule transactions={transactions} snapshots={snapshots} inventory={inventory} onSaveSnapshot={handleSaveSnapshot} onTrade={handleTrade} onDeleteTx={handleDeleteTransaction} isGuest={user.role === 'guest'} />}
+        {view === 'cierres' && <CierresModule transactions={transactions} snapshots={snapshots} inventory={inventory} onSaveSnapshot={handleSaveSnapshot} onTrade={handleTrade} onDeleteTx={handleDeleteTransaction} onDeleteSnap={handleDeleteSnapshot} isGuest={user.role === 'guest'} />}
         {view === 'graficas' && <GraficasModule transactions={transactions} snapshots={snapshots} inventory={inventory} goals={goals} onSaveGoals={handleUpdateGoals} isGuest={user.role === 'guest'} />}
         {view === 'deudas' && <LoansModule loans={loans} user={user} db={db} appId={appId} isGuest={user.role === 'guest'} onTrade={handleTrade} />}
         {view === 'simulator' && <SimulatorModule />}
@@ -350,7 +357,7 @@ export default function App() {
 }
 
 // --- MÓDULO 1: CIERRES MACRO Y GASTOS ---
-function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onTrade, onDeleteTx, isGuest }) {
+function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onTrade, onDeleteTx, onDeleteSnap, isGuest }) {
   const [subTab, setSubTab] = useState('cierre'); 
   const [snapUsdt, setSnapUsdt] = useState(inventory.usdt);
   const [snapVes, setSnapVes] = useState(inventory.ves);
@@ -446,9 +453,13 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                                    )}
                                    
                                    {item.isSnap ? (
-                                       <div className="bg-slate-800/40 p-3 rounded-xl border border-blue-500/20 flex justify-between items-center">
+                                       <div className="bg-slate-800/40 p-3 rounded-xl border border-blue-500/20 flex justify-between items-center group relative">
                                            <div className="flex items-center gap-3"><div className="p-2 rounded-full bg-blue-500/20 text-blue-400"><Save size={16}/></div><div><p className="font-bold text-sm text-blue-100">Cierre Operativo</p><p className="text-[10px] text-slate-400">{item.date} {item.note ? `- ${item.note}` : ''}</p></div></div>
-                                           <div className="text-right"><p className="font-mono font-bold text-emerald-400">${safeNum(item.netEquityUsdt).toFixed(2)}</p><p className="text-[10px] text-slate-500">Caja Actual</p></div>
+                                           <div className="flex items-center gap-3">
+                                               <div className="text-right"><p className="font-mono font-bold text-emerald-400">${safeNum(item.netEquityUsdt).toFixed(2)}</p><p className="text-[10px] text-slate-500">Caja Actual</p></div>
+                                               {/* V4.10: Botón de borrar en Cierres */}
+                                               <button onClick={() => onDeleteSnap(item)} className="p-2 text-slate-700 hover:text-red-500 opacity-0 md:opacity-100 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
+                                           </div>
                                        </div>
                                    ) : (
                                        <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
@@ -524,7 +535,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
   );
 }
 
-// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.9) ---
+// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.9 -> V4.10) ---
 function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals, isGuest }) {
   const [viewMonth, setViewMonth] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); 
   const [editingGoals, setEditingGoals] = useState(false);
@@ -769,20 +780,71 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
             </div>
             <div className="space-y-4">
               {Object.keys(monthData.byCategory).length === 0 && <p className="text-center text-xs text-slate-600">Sin fugas registradas en {monthName}.</p>}
-              {['Comida', 'Bodega', 'Servicios', 'Compras', 'Ropa', 'Ocio', 'Transporte', 'Salud', 'Caridad', 'Viajes', 'Diezmo', 'Otros'].map(catId => {
+              {/* V4.10 Nuevas Categorias (Frutas, Club, Regalos) */}
+              {['Comida', 'Bodega', 'Frutas', 'Club', 'Servicios', 'Compras', 'Ropa', 'Ocio', 'Transporte', 'Salud', 'Caridad', 'Regalos', 'Viajes', 'Diezmo', 'Otros'].map(catId => {
                 const amount = monthData.byCategory[catId] || 0;
                 const percent = monthData.totalPeriodExpenses > 0 ? (amount / monthData.totalPeriodExpenses) * 100 : 0;
                 if (amount === 0) return null;
-// --- MÓDULO 3: DEUDAS (AUTOMATIZADO V4.7 -> V4.10) ---
+                
+                let color = 'text-slate-400'; let bar = 'bg-slate-500';
+                if(catId==='Comida') { color='text-orange-400'; bar='bg-orange-500'; }
+                if(catId==='Bodega') { color='text-amber-400'; bar='bg-amber-500'; }
+                if(catId==='Frutas') { color='text-lime-400'; bar='bg-lime-500'; }
+                if(catId==='Club') { color='text-fuchsia-400'; bar='bg-fuchsia-500'; }
+                if(catId==='Servicios') { color='text-yellow-400'; bar='bg-yellow-500'; }
+                if(catId==='Compras') { color='text-emerald-400'; bar='bg-emerald-500'; }
+                if(catId==='Ropa') { color='text-pink-400'; bar='bg-pink-500'; }
+                if(catId==='Ocio') { color='text-red-400'; bar='bg-red-500'; }
+                if(catId==='Transporte') { color='text-blue-400'; bar='bg-blue-500'; }
+                if(catId==='Salud') { color='text-teal-400'; bar='bg-teal-500'; } 
+                if(catId==='Caridad') { color='text-rose-400'; bar='bg-rose-500'; } 
+                if(catId==='Regalos') { color='text-violet-400'; bar='bg-violet-500'; }
+                if(catId==='Viajes') { color='text-cyan-400'; bar='bg-cyan-500'; } 
+                if(catId==='Diezmo') { color='text-indigo-400'; bar='bg-indigo-500'; }
+                if(catId==='Otros') { color='text-slate-400'; bar='bg-slate-500'; }
+
+                return (
+                  <div key={catId}>
+                    <div className="flex justify-between text-xs mb-1"><span className={`flex items-center gap-2 font-bold ${color}`}>{catId}</span><span className="text-slate-300 font-mono">${amount.toFixed(2)}</span></div>
+                    <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden"><div className={`h-full ${bar}`} style={{ width: `${percent}%` }}></div></div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 mt-8">
+              <h3 className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-4 flex items-center gap-2"><TrendingUp size={14}/> Evolución Patrimonial</h3>
+              {macroTrend.length < 2 ? (
+                  <p className="text-xs text-slate-500 text-center py-4">Se necesitan al menos 2 meses de registros para ver la evolución macro.</p>
+              ) : (
+                  <div className="h-32 flex items-end justify-between gap-2 pt-4 relative">
+                      {macroTrend.map((m, i) => (
+                          <div key={i} className="flex-1 flex flex-col justify-end items-center group relative h-full">
+                              <div className="absolute bottom-full mb-1 opacity-0 group-hover:opacity-100 bg-blue-900 text-xs text-white p-1 rounded whitespace-nowrap z-20 transition-opacity">
+                                  ${m.equity.toFixed(0)}
+                              </div>
+                              <div className="w-full bg-blue-500/30 border-t-2 border-blue-400 rounded-t-sm hover:bg-blue-500/50 transition-colors" style={{ height: `${(m.equity / maxMacroEquity) * 100}%`, minHeight: '10px' }}></div>
+                              <span className="text-[10px] text-slate-400 font-bold mt-2 uppercase">{m.monthLabel}</span>
+                          </div>
+                      ))}
+                  </div>
+              )}
+          </div>
+      </div>
+  );
+}
+
+// --- MÓDULO 3: DEUDAS (V4.10 COBROS INTELIGENTES Y FECHA) ---
 function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
   const [name, setName] = useState(''); 
   const [currency, setCurrency] = useState('VES');
   const [amount, setAmount] = useState(''); 
   const [rateP2P, setRateP2P] = useState(''); 
-  const [loanDate, setLoanDate] = useState(getLocalDateString()); 
+  const [loanDate, setLoanDate] = useState(getLocalDateString()); // V4.10: Fecha para préstamos
   
   const [settleId, setSettleId] = useState(null); 
-  const [settleCurrency, setSettleCurrency] = useState('USDT');
+  const [settleCurrency, setSettleCurrency] = useState('USDT'); // V4.10: Cobro inteligente
   const [settleVes, setSettleVes] = useState('');
   const [settleUsdt, setSettleUsdt] = useState('');
   const [settleRate, setSettleRate] = useState('');
@@ -806,7 +868,7 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
         amountUSDT: amountUsd, 
         amountVES: amountVes, 
         rate: valRate,
-        dateStr: loanDate
+        dateStr: loanDate // V4.10: Envía fecha seleccionada
     });
 
     // 2. Registrar la cuenta por cobrar
@@ -816,7 +878,7 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
         initialRate: valRate, 
         initialVes: amountVes, 
         active: true, 
-        dateStr: loanDate, // Máquina del tiempo
+        dateStr: loanDate, // V4.10: Anclaje de fecha
         createdAt: serverTimestamp() 
     });
     setName(''); setAmount(''); setRateP2P('');
@@ -829,6 +891,7 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
       let valVes = 0;
       let valRate = 1;
 
+      // V4.10: Lógica de Cobro Inteligente USDT vs VES
       if (settleCurrency === 'VES') {
           if(!settleRate || !settleVes) return;
           valVes = parseFloat(settleVes);
@@ -893,6 +956,7 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
               </div>
           </div>
           
+          {/* V4.10: Selector de fecha de préstamo */}
           <div>
               <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Fecha del Préstamo</label>
               <input type="date" value={loanDate} onChange={e=>setLoanDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500 [color-scheme:dark]"/>
@@ -917,6 +981,7 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
                 <div className="animate-in fade-in slide-in-from-right-4">
                     <p className="text-xs text-emerald-400 font-bold mb-2">Cobro a {loan.debtor} (Deuda: ${safeNum(loan.amountUsd).toFixed(2)})</p>
                     
+                    {/* V4.10: Selector Inteligente de Cobro */}
                     <div className="flex bg-slate-950 p-1 rounded-lg mb-2">
                         <button onClick={() => setSettleCurrency('USDT')} className={`flex-1 py-1 text-[10px] font-bold uppercase rounded ${settleCurrency === 'USDT' ? 'bg-slate-800 text-emerald-400' : 'text-slate-600'}`}>En USDT</button>
                         <button onClick={() => setSettleCurrency('VES')} className={`flex-1 py-1 text-[10px] font-bold uppercase rounded ${settleCurrency === 'VES' ? 'bg-slate-800 text-white' : 'text-slate-600'}`}>En Bs</button>
@@ -942,6 +1007,7 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
 
                     <div className="flex gap-2">
                         <button onClick={()=>setSettleId(null)} className="flex-1 bg-slate-800 py-2 rounded text-slate-300 text-sm">Cancelar</button>
+                        {/* V4.10: Botón de Abono Parcial */}
                         <button onClick={()=>handleSettle(true)} className="flex-1 bg-blue-600 hover:bg-blue-500 py-2 rounded text-white font-bold text-xs flex justify-center items-center">Abono Parcial</button>
                         <button onClick={()=>handleSettle(false)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2 rounded text-white font-bold text-xs flex justify-center items-center"><CornerLeftDown size={14}/> Liquidar</button>
                     </div>
@@ -977,6 +1043,7 @@ function SimulatorModule() {
             <button onClick={() => setTab('cycles')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'cycles' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-500'}`}>Ciclos</button>
             <button onClick={() => setTab('telegram')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'telegram' ? 'bg-slate-800 text-blue-400 shadow-sm' : 'text-slate-500'}`}>Tele-P2P</button>
             <button onClick={() => setTab('simple')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'simple' ? 'bg-slate-800 text-emerald-400 shadow-sm' : 'text-slate-500'}`}>Brecha</button>
+            {/* V4.10 Simulador BTC */}
             <button onClick={() => setTab('btc')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'btc' ? 'bg-slate-800 text-orange-400 shadow-sm' : 'text-slate-500'}`}>BTC-Tri</button>
         </div>
       </div>
@@ -1054,6 +1121,7 @@ function SimpleGapCalculator() {
   );
 }
 
+// V4.10: Simulador BTC-Triangulación
 function BtcTriangulationCalc() {
   const [sellUsdt, setSellUsdt] = useState(972);
   const [buyBtc, setBuyBtc] = useState(81317019.6);
@@ -1076,20 +1144,13 @@ function BtcTriangulationCalc() {
 
   useEffect(() => {
     fetchSpotPrice();
-    // Autorefresco cada 10 segundos
     const interval = setInterval(fetchSpotPrice, 10000);
     return () => clearInterval(interval);
   }, []);
 
-  // Matemáticas de Triangulación
-  // 1. Tasa Real a la que estás comprando el BTC (en USDT)
   const realBtcBuyPrice = sellUsdt > 0 ? (buyBtc / sellUsdt) : 0;
-  
-  // 2. Cálculo de ganancia
   const spreadPercent = realBtcBuyPrice > 0 && spotBtc > 0 ? ((spotBtc / realBtcBuyPrice) - 1) * 100 : 0;
   const isProfitable = spreadPercent > 0;
-  
-  // 3. Proyección de Capital
   const btcAcquired = buyBtc > 0 ? (capital * sellUsdt) / buyBtc : 0;
   const finalUsdt = btcAcquired * spotBtc;
   const profitUsdt = finalUsdt - capital;
@@ -1138,9 +1199,8 @@ function BtcTriangulationCalc() {
        <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
            <div className="flex justify-between items-end mb-4 border-b border-slate-800 pb-4">
               <div>
-                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Tasa Real de Compra (USDT/BTC)</p>
+                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Tasa Real Compra (USDT)</p>
                  <p className="text-lg font-mono text-slate-300">${realBtcBuyPrice.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-                 <p className="text-[10px] text-slate-500 mt-1">Lo que te está costando realmente el BTC</p>
               </div>
               <div className="text-right">
                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha (Spread)</p>
@@ -1152,7 +1212,7 @@ function BtcTriangulationCalc() {
 
            <div className="flex justify-between items-center">
               <div>
-                 <p className="text-[10px] text-slate-500 uppercase font-bold">Capital Final (USDT)</p>
+                 <p className="text-[10px] text-slate-500 uppercase font-bold">Capital Final</p>
                  <p className="font-mono text-white font-bold">${finalUsdt.toLocaleString('en-US', {minimumFractionDigits: 2})}</p>
               </div>
               <div className="text-right">
@@ -1163,6 +1223,103 @@ function BtcTriangulationCalc() {
               </div>
            </div>
        </div>
+    </div>
+  );
+}
+
+
+function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
+  const [mode, setMode] = useState(forcedMode || 'buy'); 
+  const [inputVal, setInputVal] = useState(''); 
+  const [rate, setRate] = useState(''); 
+  const [expenseCategory, setExpenseCategory] = useState('Comida'); 
+  const [expenseNote, setExpenseNote] = useState(''); 
+  const [expenseCurrency, setExpenseCurrency] = useState('VES');
+  
+  const [tradeDate, setTradeDate] = useState(getLocalDateString()); 
+
+  const valInput = parseFloat(inputVal) || 0; const valRate = parseFloat(rate) || 0;
+  let calcUSDT = 0; let calcBS = 0; let feeUSDT_Calculated = 0;
+  
+  if (mode === 'buy') { calcUSDT = valInput; calcBS = valInput * valRate; } else if (mode === 'sell') { calcBS = valInput; calcUSDT = valRate > 0 ? valInput / valRate : 0; }
+  
+  const handleSubmit = () => {
+    if (mode === 'expense') { 
+        return onTrade({ type: 'expense', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput/valRate : 0), rate: valRate, category: expenseCategory, description: expenseNote, dateStr: tradeDate }); 
+    }
+    if (mode === 'withdraw') { // V4.9 Manejo del submit de Retiro
+        return onTrade({ type: 'withdraw', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput/valRate : 0), rate: valRate, description: expenseNote, dateStr: tradeDate }); 
+    }
+    if (mode === 'capital') return onTrade({ type: 'capital', amount: valInput, currency: 'USDT', rate: valRate, dateStr: tradeDate });
+    
+    onTrade({ type: mode, amountUSDT: calcUSDT, totalBS: calcBS, rate: valRate, feeUSDT: feeUSDT_Calculated, dateStr: tradeDate });
+  };
+
+  // V4.10 Nuevas categorías añadidas
+  const categories = [
+      { id: 'Comida', icon: <Utensils size={16}/>, bg: 'bg-orange-600', border: 'border-orange-500' }, 
+      { id: 'Bodega', icon: <Store size={16}/>, bg: 'bg-amber-600', border: 'border-amber-500' }, 
+      { id: 'Frutas', icon: <Utensils size={16}/>, bg: 'bg-lime-600', border: 'border-lime-500' },
+      { id: 'Club', icon: <Heart size={16}/>, bg: 'bg-fuchsia-600', border: 'border-fuchsia-500' },
+      { id: 'Servicios', icon: <Zap size={16}/>, bg: 'bg-yellow-600', border: 'border-yellow-500' }, 
+      { id: 'Compras', icon: <ShoppingBag size={16}/>, bg: 'bg-emerald-600', border: 'border-emerald-500' }, 
+      { id: 'Ropa', icon: <Shirt size={16}/>, bg: 'bg-pink-600', border: 'border-pink-500' }, 
+      { id: 'Ocio', icon: <Gamepad2 size={16}/>, bg: 'bg-red-600', border: 'border-red-500' }, 
+      { id: 'Transporte', icon: <Car size={16}/>, bg: 'bg-blue-600', border: 'border-blue-500' }, 
+      { id: 'Salud', icon: <Stethoscope size={16}/>, bg: 'bg-teal-600', border: 'border-teal-500' }, 
+      { id: 'Caridad', icon: <Gift size={16}/>, bg: 'bg-rose-600', border: 'border-rose-500' }, 
+      { id: 'Regalos', icon: <Gift size={16}/>, bg: 'bg-violet-600', border: 'border-violet-500' },
+      { id: 'Viajes', icon: <Plane size={16}/>, bg: 'bg-cyan-600', border: 'border-cyan-500' }, 
+      { id: 'Diezmo', icon: <Heart size={16}/>, bg: 'bg-indigo-600', border: 'border-indigo-500' }, 
+      { id: 'Otros', icon: <HelpCircle size={16}/>, bg: 'bg-slate-600', border: 'border-slate-500' }
+  ];
+  
+  return (
+    <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in slide-in-from-bottom-8">
+      {!forcedMode && (
+          <div className="flex bg-slate-950 p-1 rounded-lg mb-6 gap-1 overflow-x-auto no-scrollbar">
+              {['buy', 'sell', 'capital', 'withdraw'].map(m => (
+                  <button key={m} onClick={() => setMode(m)} className={`flex-1 py-2 px-2 text-[10px] font-bold uppercase rounded-md transition-colors whitespace-nowrap ${mode === m ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>
+                      {m === 'buy' ? 'Comprar' : m === 'sell' ? 'Vender' : m === 'capital' ? 'Fondeo' : 'Retiro'}
+                  </button>
+              ))}
+          </div>
+      )}
+      
+      {mode === 'expense' || mode === 'withdraw' ? (
+        <div className="space-y-4">
+            <div className="flex bg-slate-950 p-1 rounded-lg">
+                <button onClick={() => setExpenseCurrency('VES')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${expenseCurrency === 'VES' ? 'bg-slate-800 text-white' : 'text-slate-600'}`}>En Bolívares</button>
+                <button onClick={() => setExpenseCurrency('USDT')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${expenseCurrency === 'USDT' ? 'bg-slate-800 text-emerald-400' : 'text-slate-600'}`}>En USDT</button>
+            </div>
+            
+            <div className="flex gap-2">
+                <div className="flex-1"><label className="text-[10px] text-slate-400 uppercase font-bold">{expenseCurrency === 'VES' ? 'Monto (Bs)' : 'Monto (USDT)'}</label><input type="number" step="0.01" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/></div>
+                {expenseCurrency === 'VES' && (<div className="flex-1"><label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Manual (Opcional)</label><input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} placeholder="Ej: 40.5" className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/></div>)}
+            </div>
+            
+            {mode === 'expense' && (
+                <div className="grid grid-cols-3 gap-2">{categories.map(cat => (<button key={cat.id} onClick={() => setExpenseCategory(cat.id)} className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs font-bold transition-all ${expenseCategory === cat.id ? `${cat.bg} ${cat.border} text-white shadow-md` : `bg-slate-950 border-slate-700 text-slate-500`}`}>{cat.icon} {cat.id}</button>))}</div>
+            )}
+            
+            {mode === 'withdraw' && (
+                <div className="bg-slate-800/30 p-3 rounded-lg text-xs text-slate-400 text-center border border-slate-700">
+                    El Retiro descuenta saldo pero NO se suma a tus Fugas/Gastos. Úsalo para ahorros o pagos pendientes a terceros.
+                </div>
+            )}
+
+            <input type="text" value={expenseNote} onChange={e => setExpenseNote(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none" placeholder={mode === 'withdraw' ? "Motivo del retiro (Ej: Pago Karen)" : "Nota / Detalle"}/>
+        </div>
+      ) : (
+        <div className="space-y-4"><div><label className="text-[10px] text-slate-400 uppercase font-bold">{mode === 'buy' ? 'USDT a Comprar' : mode === 'sell' ? 'Bs Recibidos' : 'Monto (USDT)'}</label><input type="number" step="0.01" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/></div><div><label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Referencia</label><input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none"/></div></div>
+      )}
+
+      <div className="mt-4 pt-4 border-t border-slate-800">
+          <label className="text-[10px] text-slate-400 uppercase font-bold mb-1 flex items-center gap-1"><CalendarDays size={12}/> Fecha Contable</label>
+          <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 text-sm [color-scheme:dark]"/>
+      </div>
+
+      <div className="flex gap-3 mt-6"><button onClick={onCancel} className="flex-1 py-3 bg-slate-800 rounded-lg text-slate-400 font-bold">Cancelar</button><button onClick={handleSubmit} className="flex-1 py-3 bg-blue-600 rounded-lg text-white font-bold shadow-lg">Guardar</button></div>
     </div>
   );
 }
