@@ -13,7 +13,7 @@ import {
   Activity, User, RefreshCcw, Settings, BarChart3, ArrowRight, Lock, ToggleLeft, ToggleRight, 
   Target, Pencil, Scale, MessageCircle, Loader2, CheckCircle2, ChevronDown, ChevronUp, DollarSign,
   Store, ShoppingBag, Gamepad2, ChevronLeft, ChevronRight, CornerRightUp, CornerLeftDown, CalendarDays,
-  Stethoscope, Gift, Plane, Bitcoin, ArrowRightLeft
+  Stethoscope, Gift, Plane, Bitcoin, ArrowRightLeft, Receipt
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -136,7 +136,7 @@ export default function App() {
         newInv.avgPrice = totalUSDT > 0 ? (totalCostOld + costNew) / totalUSDT : 0;
         newInv.usdt = totalUSDT;
       }
-    } else if (data.type === 'withdraw') { // V4.9: Manejo del Retiro
+    } else if (data.type === 'withdraw') {
       if (data.currency === 'USDT') newInv.usdt -= safeNum(data.amountUSDT);
       else newInv.ves -= safeNum(data.amountBS);
     } else if (data.type === 'loan_out') {
@@ -207,7 +207,6 @@ export default function App() {
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
   };
 
-  // V4.10: Función para borrar Cierres
   const handleDeleteSnapshot = async (snap) => {
     if (user.role === 'guest') return;
     if(!confirm(`¿Estás seguro de borrar el cierre operativo del día ${snap.date}?`)) return;
@@ -457,7 +456,6 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                                            <div className="flex items-center gap-3"><div className="p-2 rounded-full bg-blue-500/20 text-blue-400"><Save size={16}/></div><div><p className="font-bold text-sm text-blue-100">Cierre Operativo</p><p className="text-[10px] text-slate-400">{item.date} {item.note ? `- ${item.note}` : ''}</p></div></div>
                                            <div className="flex items-center gap-3">
                                                <div className="text-right"><p className="font-mono font-bold text-emerald-400">${safeNum(item.netEquityUsdt).toFixed(2)}</p><p className="text-[10px] text-slate-500">Caja Actual</p></div>
-                                               {/* V4.10: Botón de borrar en Cierres */}
                                                <button onClick={() => onDeleteSnap(item)} className="p-2 text-slate-700 hover:text-red-500 opacity-0 md:opacity-100 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
                                            </div>
                                        </div>
@@ -535,7 +533,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
   );
 }
 
-// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA (V4.10) ---
+// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA ---
 function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals, isGuest }) {
   const [viewMonth, setViewMonth] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); 
   const [editingGoals, setEditingGoals] = useState(false);
@@ -831,7 +829,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
   );
 }
 
-// --- MÓDULO 3: DEUDAS (V4.10 COBROS INTELIGENTES Y FECHA) ---
+// --- MÓDULO 3: DEUDAS ---
 function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
   const [name, setName] = useState(''); 
   const [currency, setCurrency] = useState('VES');
@@ -1104,13 +1102,18 @@ function SimpleGapCalculator() {
   );
 }
 
-// V4.10: Simulador BTC-Triangulación con API CoinGecko
+// Simulador Avanzado BTC-Triangulación (Perspectiva USDT a USDT)
 function BtcTriangulationCalc() {
+  const [capital, setCapital] = useState(1000);
   const [sellUsdt, setSellUsdt] = useState(972);
-  const [buyBtc, setBuyBtc] = useState(81317019.6);
+  const [buyBtc, setBuyBtc] = useState(81000000);
   const [spotBtc, setSpotBtc] = useState(0);
-  const [capital, setCapital] = useState(100);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Toggles de Comisiones
+  const [feeSellBinance, setFeeSellBinance] = useState(true);
+  const [feeBuyBinance, setFeeBuyBinance] = useState(true);
+  const [feePM, setFeePM] = useState(true);
 
   const fetchSpotPrice = async () => {
     setIsLoading(true);
@@ -1129,19 +1132,52 @@ function BtcTriangulationCalc() {
 
   useEffect(() => {
     fetchSpotPrice();
-    const interval = setInterval(fetchSpotPrice, 10000);
+    const interval = setInterval(fetchSpotPrice, 15000);
     return () => clearInterval(interval);
   }, []);
 
-  const realBtcBuyPrice = sellUsdt > 0 ? (buyBtc / sellUsdt) : 0;
-  const spreadPercent = realBtcBuyPrice > 0 && spotBtc > 0 ? ((spotBtc / realBtcBuyPrice) - 1) * 100 : 0;
-  const isProfitable = spreadPercent > 0;
-  const btcAcquired = buyBtc > 0 ? (capital * sellUsdt) / buyBtc : 0;
-  const finalUsdt = btcAcquired * spotBtc;
-  const profitUsdt = finalUsdt - capital;
+  // --- LÓGICA DE CÁLCULO TRADER ---
+
+  // Valores de comisión
+  const feeSellVal = feeSellBinance ? 0.002 : 0; // 0.2%
+  const feeBuyVal = feeBuyBinance ? 0.002 : 0;   // 0.2%
+  const feePmVal = feePM ? 0.003 : 0;            // 0.3%
+
+  // 1. CÁLCULO BRUTO (Fantasía, 0% comisiones)
+  const grossBs = capital * sellUsdt;
+  const grossBtc = buyBtc > 0 ? grossBs / buyBtc : 0;
+  const grossUsdt = grossBtc * spotBtc;
+  const grossSpread = capital > 0 ? ((grossUsdt / capital) - 1) * 100 : 0;
+  
+  // 2. CÁLCULO NETO (Real, con comisiones descontadas en cada paso)
+  // Paso A: Vendes USDT. Si es Binance, te quitan 0.2% de tus USDT al crear la orden.
+  const netUsdtSold = capital * (1 - feeSellVal);
+  const netBsReceived = netUsdtSold * sellUsdt;
+  
+  // Paso B: Tienes Bs en el banco. Vas a comprar BTC. Al transferir por Pago Móvil, el banco te quita 0.3%.
+  // Por lo tanto, el dinero real que llega al vendedor es tu saldo menos el 0.3%.
+  const netBsForBtc = netBsReceived * (1 - feePmVal);
+  const rawBtcBought = buyBtc > 0 ? netBsForBtc / buyBtc : 0;
+  
+  // Paso C: Binance te quita el 0.2% del BTC que acabas de comprar
+  const netBtcBought = rawBtcBought * (1 - feeBuyVal);
+  
+  // Paso D: Vendes ese BTC en Spot (asumimos 0 fee o negligible para simplicidad de salida a mercado)
+  const netFinalUsdt = netBtcBought * spotBtc;
+
+  // 3. MÉTRICAS FINALES
+  const netProfit = netFinalUsdt - capital;
+  const netSpread = capital > 0 ? ((netFinalUsdt / capital) - 1) * 100 : 0;
+  const isProfitable = netProfit > 0;
+  
+  // TASA DE RECOMPRA IMPLÍCITA: ¿Cuántos Bs me costó realmente recuperar 1 USDT?
+  // (Dinero en el banco / USDT que llegaron a mi bolsillo)
+  const netImpliedBuyRate = netFinalUsdt > 0 ? netBsReceived / netFinalUsdt : 0;
 
   return (
     <div className="p-4 space-y-4 animate-in fade-in">
+       
+       {/* PANEL DE CONTROL DE PARÁMETROS */}
        <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl">
            <h3 className="text-xs text-orange-400 font-bold uppercase mb-4 flex items-center gap-2">
              <ArrowRightLeft size={14}/> Arbitraje Triangular (USDT <ArrowRight size={10}/> Bs <ArrowRight size={10}/> BTC)
@@ -1149,8 +1185,8 @@ function BtcTriangulationCalc() {
            
            <div className="space-y-4">
                <div>
-                  <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Capital a Invertir (USDT)</label>
-                  <input type="number" value={capital} onChange={e=>setCapital(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none focus:border-orange-500"/>
+                  <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Capital Inicial (USDT)</label>
+                  <input type="number" value={capital} onChange={e=>setCapital(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none focus:border-orange-500 text-lg"/>
                </div>
                
                <div className="grid grid-cols-2 gap-3">
@@ -1165,47 +1201,112 @@ function BtcTriangulationCalc() {
                       <input type="number" value={buyBtc} onChange={e=>setBuyBtc(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/>
                    </div>
                </div>
+
+               {/* SECCIÓN DE COMISIONES AJUSTABLES */}
+               <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-3">
+                  <p className="text-[10px] text-slate-500 font-bold uppercase border-b border-slate-800 pb-1">Gestión de Comisiones</p>
+                  
+                  <div className="flex justify-between items-center">
+                    <div>
+                        <p className="text-xs text-slate-300">Venta USDT (Binance)</p>
+                        <p className="text-[9px] text-slate-500">-0.2% en USDT</p>
+                    </div>
+                    <button onClick={()=>setFeeSellBinance(!feeSellBinance)} className={`p-1 transition-colors ${feeSellBinance ? 'text-orange-400' : 'text-slate-600'}`}>
+                        {feeSellBinance ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}
+                    </button>
+                  </div>
+                  
+                  <div className="flex justify-between items-center">
+                    <div>
+                        <p className="text-xs text-slate-300">Envío Pago Móvil</p>
+                        <p className="text-[9px] text-slate-500">-0.3% en Bs transferidos</p>
+                    </div>
+                    <button onClick={()=>setFeePM(!feePM)} className={`p-1 transition-colors ${feePM ? 'text-orange-400' : 'text-slate-600'}`}>
+                        {feePM ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}
+                    </button>
+                  </div>
+
+                  <div className="flex justify-between items-center">
+                    <div>
+                        <p className="text-xs text-slate-300">Compra BTC (Binance)</p>
+                        <p className="text-[9px] text-slate-500">-0.2% en BTC recibidos</p>
+                    </div>
+                    <button onClick={()=>setFeeBuyBinance(!feeBuyBinance)} className={`p-1 transition-colors ${feeBuyBinance ? 'text-orange-400' : 'text-slate-600'}`}>
+                        {feeBuyBinance ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}
+                    </button>
+                  </div>
+               </div>
                
+               {/* PRECIO SPOT EN VIVO */}
                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 relative">
                   <label className="text-[10px] text-slate-500 font-bold uppercase block mb-2 flex justify-between items-center">
-                    <span>3. Precio Spot BTC/USDT (Global)</span>
+                    <span>3. Mercado Spot BTC/USDT</span>
                     <button onClick={fetchSpotPrice} disabled={isLoading} className="text-orange-400 hover:text-white transition-colors bg-orange-500/10 p-1 rounded">
                       {isLoading ? <Loader2 size={12} className="animate-spin"/> : <RefreshCcw size={12}/>}
                     </button>
                   </label>
                   <div className="flex justify-between items-center">
                     <span className="text-2xl font-mono text-white">${spotBtc.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
-                    <span className="text-[10px] text-slate-500 flex items-center gap-1 animate-pulse"><Activity size={10}/> En vivo</span>
+                    <span className="text-[10px] text-slate-500 flex items-center gap-1 animate-pulse"><Activity size={10}/> En vivo CoinGecko</span>
                   </div>
                </div>
            </div>
        </div>
 
-       <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
-           <div className="flex justify-between items-end mb-4 border-b border-slate-800 pb-4">
+       {/* FICHA TÉCNICA Y RESULTADOS */}
+       <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl relative overflow-hidden">
+           <div className="absolute top-0 right-0 p-4 opacity-5"><Receipt size={80}/></div>
+           
+           <h3 className="text-xs text-slate-400 font-bold uppercase mb-4 flex items-center gap-2 border-b border-slate-800 pb-2">
+               Ficha Técnica de Operación
+           </h3>
+
+           <div className="space-y-3 relative z-10 text-sm">
+               <div className="flex justify-between items-center">
+                   <span className="text-slate-400">Capital Inicial</span>
+                   <span className="font-mono text-white">{capital.toFixed(2)} USDT</span>
+               </div>
+               <div className="flex justify-between items-center">
+                   <span className="text-slate-400">Bs Obtenidos en Banco</span>
+                   <span className="font-mono text-slate-300">Bs {netBsReceived.toLocaleString('es-ES', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>
+               </div>
+               <div className="flex justify-between items-center">
+                   <span className="text-slate-400">BTC Comprados (Netos)</span>
+                   <span className="font-mono text-orange-400">{netBtcBought.toFixed(8)} BTC</span>
+               </div>
+               <div className="flex justify-between items-center border-t border-slate-800 pt-3">
+                   <span className="text-slate-300 font-bold">USDT Finales (Equivalentes)</span>
+                   <span className="font-mono font-bold text-lg text-white">{netFinalUsdt.toFixed(2)} USDT</span>
+               </div>
+               
+               {/* EL DATO CLAVE DEL TRADER */}
+               <div className="bg-blue-900/20 p-3 rounded-lg border border-blue-500/30 mt-4 mb-4">
+                   <p className="text-[10px] text-blue-400 uppercase font-bold mb-1">Tasa Real de Recompra USDT</p>
+                   <div className="flex justify-between items-end">
+                       <span className="font-mono text-xl text-blue-100">{netImpliedBuyRate.toFixed(2)} Bs</span>
+                       <span className="text-xs text-blue-400">(Vendiste a {sellUsdt})</span>
+                   </div>
+               </div>
+           </div>
+
+           <div className="grid grid-cols-2 gap-4 mt-6 border-t border-slate-800 pt-4">
               <div>
-                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Tasa Real Compra (USDT)</p>
-                 <p className="text-lg font-mono text-slate-300">${realBtcBuyPrice.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha Bruta (0% Com)</p>
+                 <p className="text-lg font-mono text-slate-400">{grossSpread > 0 ? '+' : ''}{grossSpread.toFixed(2)}%</p>
               </div>
               <div className="text-right">
-                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha (Spread)</p>
+                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha NETA</p>
                  <h2 className={`text-2xl font-black ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>
-                   {isProfitable ? '+' : ''}{spreadPercent.toFixed(2)}%
+                   {isProfitable ? '+' : ''}{netSpread.toFixed(2)}%
                  </h2>
               </div>
            </div>
 
-           <div className="flex justify-between items-center">
-              <div>
-                 <p className="text-[10px] text-slate-500 uppercase font-bold">Capital Final</p>
-                 <p className="font-mono text-white font-bold">${finalUsdt.toLocaleString('en-US', {minimumFractionDigits: 2})}</p>
-              </div>
-              <div className="text-right">
-                 <p className="text-[10px] text-slate-500 uppercase font-bold">Ganancia Neta</p>
-                 <p className={`font-mono font-bold text-lg ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>
-                   {isProfitable ? '+' : ''}${profitUsdt.toLocaleString('en-US', {minimumFractionDigits: 2})}
+           <div className="mt-4 pt-4 border-t border-slate-800 text-center">
+                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Ganancia Neta Calculada</p>
+                 <p className={`font-mono font-bold text-2xl ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>
+                   {isProfitable ? '+' : ''}${netProfit.toFixed(2)}
                  </p>
-              </div>
            </div>
        </div>
     </div>
@@ -1231,7 +1332,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
     if (mode === 'expense') { 
         return onTrade({ type: 'expense', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput/valRate : 0), rate: valRate, category: expenseCategory, description: expenseNote, dateStr: tradeDate }); 
     }
-    if (mode === 'withdraw') {
+    if (mode === 'withdraw') { 
         return onTrade({ type: 'withdraw', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput/valRate : 0), rate: valRate, description: expenseNote, dateStr: tradeDate }); 
     }
     if (mode === 'capital') return onTrade({ type: 'capital', amount: valInput, currency: 'USDT', rate: valRate, dateStr: tradeDate });
@@ -1242,8 +1343,8 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
   const categories = [
       { id: 'Comida', icon: <Utensils size={16}/>, bg: 'bg-orange-600', border: 'border-orange-500' }, 
       { id: 'Bodega', icon: <Store size={16}/>, bg: 'bg-amber-600', border: 'border-amber-500' }, 
-      { id: 'Frutas', icon: <Utensils size={16}/>, bg: 'bg-lime-600', border: 'border-lime-500' },
-      { id: 'Club', icon: <Heart size={16}/>, bg: 'bg-fuchsia-600', border: 'border-fuchsia-500' },
+      { id: 'Frutas', icon: <Utensils size={16}/>, bg: 'bg-lime-600', border: 'border-lime-500' }, 
+      { id: 'Club', icon: <Heart size={16}/>, bg: 'bg-fuchsia-600', border: 'border-fuchsia-500' }, 
       { id: 'Servicios', icon: <Zap size={16}/>, bg: 'bg-yellow-600', border: 'border-yellow-500' }, 
       { id: 'Compras', icon: <ShoppingBag size={16}/>, bg: 'bg-emerald-600', border: 'border-emerald-500' }, 
       { id: 'Ropa', icon: <Shirt size={16}/>, bg: 'bg-pink-600', border: 'border-pink-500' }, 
@@ -1251,7 +1352,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
       { id: 'Transporte', icon: <Car size={16}/>, bg: 'bg-blue-600', border: 'border-blue-500' }, 
       { id: 'Salud', icon: <Stethoscope size={16}/>, bg: 'bg-teal-600', border: 'border-teal-500' }, 
       { id: 'Caridad', icon: <Gift size={16}/>, bg: 'bg-rose-600', border: 'border-rose-500' }, 
-      { id: 'Regalos', icon: <Gift size={16}/>, bg: 'bg-violet-600', border: 'border-violet-500' },
+      { id: 'Regalos', icon: <Gift size={16}/>, bg: 'bg-violet-600', border: 'border-violet-500' }, 
       { id: 'Viajes', icon: <Plane size={16}/>, bg: 'bg-cyan-600', border: 'border-cyan-500' }, 
       { id: 'Diezmo', icon: <Heart size={16}/>, bg: 'bg-indigo-600', border: 'border-indigo-500' }, 
       { id: 'Otros', icon: <HelpCircle size={16}/>, bg: 'bg-slate-600', border: 'border-slate-500' }
