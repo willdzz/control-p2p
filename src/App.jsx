@@ -410,7 +410,8 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                ].sort((a, b) => {
                    const dateA = a.dateStr || a.date || "1970-01-01";
                    const dateB = b.dateStr || b.date || "1970-01-01";
-                   if (dateA !== dateB) return new Date(dateB) - new Date(dateA);
+                   // FIX: Asegurar T12 para que no brinque al día anterior al ordenar
+                   if (dateA !== dateB) return new Date(dateB + 'T12:00:00') - new Date(dateA + 'T12:00:00');
                    const timeA = a.createdAt?.seconds || 0;
                    const timeB = b.createdAt?.seconds || 0;
                    return timeB - timeA;
@@ -421,6 +422,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
 
                const formatDateHeader = (dateString) => {
                    if (!dateString) return 'Desconocido';
+                   // FIX: T12:00:00 asegura que la zona horaria no cambie el día
                    const d = new Date(dateString + 'T12:00:00'); 
                    const today = new Date();
                    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
@@ -456,7 +458,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                                            <div className="flex items-center gap-3"><div className="p-2 rounded-full bg-blue-500/20 text-blue-400"><Save size={16}/></div><div><p className="font-bold text-sm text-blue-100">Cierre Operativo</p><p className="text-[10px] text-slate-400">{item.date} {item.note ? `- ${item.note}` : ''}</p></div></div>
                                            <div className="flex items-center gap-3">
                                                <div className="text-right"><p className="font-mono font-bold text-emerald-400">${safeNum(item.netEquityUsdt).toFixed(2)}</p><p className="text-[10px] text-slate-500">Caja Actual</p></div>
-                                               <button onClick={() => onDeleteSnap(item)} className="p-2 text-slate-700 hover:text-red-500 opacity-0 md:opacity-100 group-hover:opacity-100 transition-opacity"><Trash2 size={14} /></button>
+                                               <button onClick={() => onDeleteSnap(item)} className="p-2 text-slate-700 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
                                            </div>
                                        </div>
                                    ) : (
@@ -558,10 +560,11 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
       const activeDays = isCurrentMonth ? now.getDate() : daysInMonth;
       const days = [];
       
-      const prePeriodSnaps = snapshots.filter(s => new Date(s.date) < firstDay).sort((a,b) => new Date(b.date) - new Date(a.date));
+      // FIX: Agregado T12:00:00 para evitar que la zona horaria atrase el día
+      const prePeriodSnaps = snapshots.filter(s => new Date(s.date + 'T12:00:00') < firstDay).sort((a,b) => new Date(b.date + 'T12:00:00') - new Date(a.date + 'T12:00:00'));
       const firstMonthSnaps = snapshots.filter(s => {
-          const d = new Date(s.date); return d >= firstDay && d <= lastDay;
-      }).sort((a,b) => new Date(a.date) - new Date(b.date));
+          const d = new Date(s.date + 'T12:00:00'); return d >= firstDay && d <= lastDay;
+      }).sort((a,b) => new Date(a.date + 'T12:00:00') - new Date(b.date + 'T12:00:00'));
 
       let startingCapital = prePeriodSnaps.length > 0 ? prePeriodSnaps[0].netEquityUsdt : (firstMonthSnaps.length > 0 ? firstMonthSnaps[0].netEquityUsdt : 0);
       let endingCapital = startingCapital;
@@ -574,7 +577,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
       let totalLoansOut = 0;
 
       const monthExpenses = transactions.filter(t => {
-          const d = new Date(t.dateStr); return d >= firstDay && d <= lastDay && t.type === 'expense';
+          const d = new Date(t.dateStr + 'T12:00:00'); return d >= firstDay && d <= lastDay && t.type === 'expense';
       });
       const byCategory = monthExpenses.reduce((acc, curr) => {
          const cat = curr.category || 'Otros';
@@ -631,15 +634,15 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
       const byMonth = {};
       snapshots.forEach(s => {
           const prefix = s.date.substring(0, 7); 
-          if (!byMonth[prefix] || new Date(s.date) > new Date(byMonth[prefix].date)) {
+          if (!byMonth[prefix] || new Date(s.date + 'T12:00:00') > new Date(byMonth[prefix].date + 'T12:00:00')) {
               byMonth[prefix] = s;
           }
       });
       return Object.values(byMonth)
-          .sort((a, b) => new Date(a.date) - new Date(b.date))
+          .sort((a, b) => new Date(a.date + 'T12:00:00') - new Date(b.date + 'T12:00:00'))
           .slice(-6)
           .map(s => ({
-              monthLabel: new Date(s.date + 'T00:00:00').toLocaleString('es-ES', { month: 'short' }),
+              monthLabel: new Date(s.date + 'T12:00:00').toLocaleString('es-ES', { month: 'short' }),
               equity: s.netEquityUsdt
           }));
   }, [snapshots]);
@@ -1109,75 +1112,94 @@ function BtcTriangulationCalc() {
   const [buyBtc, setBuyBtc] = useState(81000000);
   const [spotBtc, setSpotBtc] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
+  const [apiSource, setApiSource] = useState('Manual');
 
   // Toggles de Comisiones
   const [feeSellBinance, setFeeSellBinance] = useState(true);
   const [feeBuyBinance, setFeeBuyBinance] = useState(true);
   const [feePM, setFeePM] = useState(true);
 
+  // FIX: Sistema de Búsqueda de Precio en Cascada + Manual
   const fetchSpotPrice = async () => {
     setIsLoading(true);
+    setApiSource('Buscando...');
+    
     try {
-      const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
-      const data = await response.json();
-      if (data && data.bitcoin && data.bitcoin.usd) {
-        setSpotBtc(parseFloat(data.bitcoin.usd));
+      // Intento 1: CoinGecko
+      const resCG = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+      const dataCG = await resCG.json();
+      if (dataCG && dataCG.bitcoin && dataCG.bitcoin.usd) {
+        setSpotBtc(parseFloat(dataCG.bitcoin.usd));
+        setApiSource('CoinGecko');
+        setIsLoading(false);
+        return;
       }
-    } catch (error) {
-      console.error("Error al obtener precio:", error);
-    } finally {
-      setIsLoading(false);
-    }
+    } catch (e) { console.warn("Fallo CoinGecko, intentando Binance..."); }
+
+    try {
+      // Intento 2: Binance Pública
+      const resBin = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+      const dataBin = await resBin.json();
+      if (dataBin && dataBin.price) {
+        setSpotBtc(parseFloat(dataBin.price));
+        setApiSource('Binance');
+        setIsLoading(false);
+        return;
+      }
+    } catch (e) { console.warn("Fallo Binance, intentando KuCoin..."); }
+    
+    try {
+      // Intento 3: KuCoin Pública
+      const resKu = await fetch('https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=BTC-USDT');
+      const dataKu = await resKu.json();
+      if (dataKu && dataKu.data && dataKu.data.price) {
+        setSpotBtc(parseFloat(dataKu.data.price));
+        setApiSource('KuCoin');
+        setIsLoading(false);
+        return;
+      }
+    } catch (e) { console.warn("Fallo KuCoin."); }
+
+    // Si todo falla
+    setApiSource('Fallo de red - Usa Manual');
+    setIsLoading(false);
   };
 
   useEffect(() => {
     fetchSpotPrice();
-    const interval = setInterval(fetchSpotPrice, 15000);
+    // Bajamos la frecuencia a cada 30 seg para no saturar APIs
+    const interval = setInterval(fetchSpotPrice, 30000);
     return () => clearInterval(interval);
   }, []);
 
   // --- LÓGICA DE CÁLCULO TRADER ---
+  const feeSellVal = feeSellBinance ? 0.002 : 0; 
+  const feeBuyVal = feeBuyBinance ? 0.002 : 0;   
+  const feePmVal = feePM ? 0.003 : 0;            
 
-  // Valores de comisión
-  const feeSellVal = feeSellBinance ? 0.002 : 0; // 0.2%
-  const feeBuyVal = feeBuyBinance ? 0.002 : 0;   // 0.2%
-  const feePmVal = feePM ? 0.003 : 0;            // 0.3%
-
-  // 1. CÁLCULO BRUTO (Fantasía, 0% comisiones)
   const grossBs = capital * sellUsdt;
   const grossBtc = buyBtc > 0 ? grossBs / buyBtc : 0;
   const grossUsdt = grossBtc * spotBtc;
   const grossSpread = capital > 0 ? ((grossUsdt / capital) - 1) * 100 : 0;
   
-  // 2. CÁLCULO NETO (Real, con comisiones descontadas en cada paso)
-  // Paso A: Vendes USDT. Si es Binance, te quitan 0.2% de tus USDT al crear la orden.
   const netUsdtSold = capital * (1 - feeSellVal);
   const netBsReceived = netUsdtSold * sellUsdt;
   
-  // Paso B: Tienes Bs en el banco. Vas a comprar BTC. Al transferir por Pago Móvil, el banco te quita 0.3%.
-  // Por lo tanto, el dinero real que llega al vendedor es tu saldo menos el 0.3%.
   const netBsForBtc = netBsReceived * (1 - feePmVal);
   const rawBtcBought = buyBtc > 0 ? netBsForBtc / buyBtc : 0;
   
-  // Paso C: Binance te quita el 0.2% del BTC que acabas de comprar
   const netBtcBought = rawBtcBought * (1 - feeBuyVal);
-  
-  // Paso D: Vendes ese BTC en Spot (asumimos 0 fee o negligible para simplicidad de salida a mercado)
   const netFinalUsdt = netBtcBought * spotBtc;
 
-  // 3. MÉTRICAS FINALES
   const netProfit = netFinalUsdt - capital;
   const netSpread = capital > 0 ? ((netFinalUsdt / capital) - 1) * 100 : 0;
   const isProfitable = netProfit > 0;
   
-  // TASA DE RECOMPRA IMPLÍCITA: ¿Cuántos Bs me costó realmente recuperar 1 USDT?
-  // (Dinero en el banco / USDT que llegaron a mi bolsillo)
   const netImpliedBuyRate = netFinalUsdt > 0 ? netBsReceived / netFinalUsdt : 0;
 
   return (
     <div className="p-4 space-y-4 animate-in fade-in">
        
-       {/* PANEL DE CONTROL DE PARÁMETROS */}
        <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl">
            <h3 className="text-xs text-orange-400 font-bold uppercase mb-4 flex items-center gap-2">
              <ArrowRightLeft size={14}/> Arbitraje Triangular (USDT <ArrowRight size={10}/> Bs <ArrowRight size={10}/> BTC)
@@ -1202,7 +1224,6 @@ function BtcTriangulationCalc() {
                    </div>
                </div>
 
-               {/* SECCIÓN DE COMISIONES AJUSTABLES */}
                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-3">
                   <p className="text-[10px] text-slate-500 font-bold uppercase border-b border-slate-800 pb-1">Gestión de Comisiones</p>
                   
@@ -1237,23 +1258,31 @@ function BtcTriangulationCalc() {
                   </div>
                </div>
                
-               {/* PRECIO SPOT EN VIVO */}
+               {/* FIX: CAMPO EDITABLE MANUAL DE BTC + CASCADA DE APIs */}
                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 relative">
                   <label className="text-[10px] text-slate-500 font-bold uppercase block mb-2 flex justify-between items-center">
                     <span>3. Mercado Spot BTC/USDT</span>
-                    <button onClick={fetchSpotPrice} disabled={isLoading} className="text-orange-400 hover:text-white transition-colors bg-orange-500/10 p-1 rounded">
-                      {isLoading ? <Loader2 size={12} className="animate-spin"/> : <RefreshCcw size={12}/>}
-                    </button>
+                    <div className="flex gap-2">
+                        <span className="text-[9px] text-slate-500 bg-slate-900 px-2 py-1 rounded">Fuente: {apiSource}</span>
+                        <button onClick={fetchSpotPrice} disabled={isLoading} className="text-orange-400 hover:text-white transition-colors bg-orange-500/10 p-1 rounded">
+                          {isLoading ? <Loader2 size={12} className="animate-spin"/> : <RefreshCcw size={12}/>}
+                        </button>
+                    </div>
                   </label>
-                  <div className="flex justify-between items-center">
-                    <span className="text-2xl font-mono text-white">${spotBtc.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
-                    <span className="text-[10px] text-slate-500 flex items-center gap-1 animate-pulse"><Activity size={10}/> En vivo CoinGecko</span>
+                  <div className="flex justify-between items-center bg-slate-900 border border-slate-700 rounded-xl overflow-hidden focus-within:border-orange-500 transition-colors">
+                     <span className="pl-3 text-slate-400 font-bold">$</span>
+                     <input 
+                        type="number" 
+                        step="0.01" 
+                        value={spotBtc} 
+                        onChange={e => { setSpotBtc(parseFloat(e.target.value) || 0); setApiSource('Manual'); }} 
+                        className="w-full bg-transparent p-3 text-white font-mono text-2xl outline-none"
+                     />
                   </div>
                </div>
            </div>
        </div>
 
-       {/* FICHA TÉCNICA Y RESULTADOS */}
        <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl relative overflow-hidden">
            <div className="absolute top-0 right-0 p-4 opacity-5"><Receipt size={80}/></div>
            
@@ -1279,7 +1308,6 @@ function BtcTriangulationCalc() {
                    <span className="font-mono font-bold text-lg text-white">{netFinalUsdt.toFixed(2)} USDT</span>
                </div>
                
-               {/* EL DATO CLAVE DEL TRADER */}
                <div className="bg-blue-900/20 p-3 rounded-lg border border-blue-500/30 mt-4 mb-4">
                    <p className="text-[10px] text-blue-400 uppercase font-bold mb-1">Tasa Real de Recompra USDT</p>
                    <div className="flex justify-between items-end">
