@@ -341,6 +341,7 @@ export default function App() {
         {view === 'cierres' && <CierresModule transactions={transactions} snapshots={snapshots} inventory={inventory} onSaveSnapshot={handleSaveSnapshot} onTrade={handleTrade} onDeleteTx={handleDeleteTransaction} onDeleteSnap={handleDeleteSnapshot} isGuest={user.role === 'guest'} />}
         {view === 'graficas' && <GraficasModule transactions={transactions} snapshots={snapshots} inventory={inventory} goals={goals} onSaveGoals={handleUpdateGoals} isGuest={user.role === 'guest'} />}
         {view === 'deudas' && <LoansModule loans={loans} user={user} db={db} appId={appId} isGuest={user.role === 'guest'} onTrade={handleTrade} />}
+        {view === 'presupuestos' && <PresupuestosModule user={user} db={db} appId={appId} isGuest={user.role === 'guest'} />}
         {view === 'simulator' && <SimulatorModule />}
       </div>
 
@@ -349,6 +350,7 @@ export default function App() {
         <NavButton icon={<Save/>} label="Cierres" active={view === 'cierres'} onClick={() => setView('cierres')} />
         <NavButton icon={<BarChart3/>} label="Gráficas" active={view === 'graficas'} onClick={() => setView('graficas')} />
         <NavButton icon={<Users/>} label="Deudas" active={view === 'deudas'} onClick={() => setView('deudas')} />
+        <NavButton icon={<Landmark/>} label="Presupuestos" active={view === 'presupuestos'} onClick={() => setView('presupuestos')} />
         <NavButton icon={<Calculator/>} label="Simulador" active={view === 'simulator'} onClick={() => setView('simulator')} highlight={true} />
       </div>
     </div>
@@ -1013,6 +1015,23 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
             )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// --- MÓDULO 4: PRESUPUESTOS PERSONALES ---
+function PresupuestosModule({ user, db, appId, isGuest }) {
+  if (isGuest) return <div className="text-center p-10 text-slate-500">Presupuestos desactivados</div>;
+  
+  return (
+    <div className="space-y-4 pb-20 animate-in fade-in">
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-lg">
+        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2"><Landmark size={16} className="text-blue-400"/> Presupuesto Personal</h3>
+        <p className="text-xs text-slate-500 leading-relaxed">
+            Módulo estructural en construcción. Aquí operará la matriz 20/30/20/20/10 (Diezmo, Sostenimiento, Proyectos, Patrimonio, Reserva) 
+            y la distribución de excedentes sin alterar tu capital P2P.
+        </p>
       </div>
     </div>
   );
