@@ -13,7 +13,7 @@ import {
   Activity, User, RefreshCcw, Settings, BarChart3, ArrowRight, Lock, ToggleLeft, ToggleRight, 
   Target, Pencil, Scale, MessageCircle, Loader2, CheckCircle2, ChevronDown, ChevronUp, DollarSign,
   Store, ShoppingBag, Gamepad2, ChevronLeft, ChevronRight, CornerRightUp, CornerLeftDown, CalendarDays,
-  Stethoscope, Gift, Plane, Bitcoin, ArrowRightLeft, Receipt
+  Stethoscope, Gift, Plane, Bitcoin, ArrowRightLeft, Receipt, ShieldCheck
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN DE FIREBASE ---
@@ -1022,16 +1022,121 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
 
 // --- MÓDULO 4: PRESUPUESTOS PERSONALES ---
 function PresupuestosModule({ user, db, appId, isGuest }) {
+  const [buckets, setBuckets] = useState({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+  const [distributeAmount, setDistributeAmount] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  useEffect(() => {
+    if (isGuest) return;
+    const unsub = onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), (snap) => {
+        if(snap.exists()) setBuckets(snap.data());
+    });
+    return () => unsub();
+  }, [user, isGuest, db, appId]);
+
+  const handleDistribute = async () => {
+    if (isGuest) { alert("Modo Invitado: Distribución bloqueada."); return; }
+    const amount = parseFloat(distributeAmount);
+    if (!amount || amount <= 0) return;
+    if (!confirm(`¿Distribuir $${amount} USDT entre tus cubetas personales?`)) return;
+
+    setIsProcessing(true);
+    try {
+        let dDiezmo = 0, dSost = 0, dProy = 0, dPatr = 0, dRes = 0;
+        const base = Math.min(amount, 1200);
+        const surplus = Math.max(0, amount - 1200);
+
+        // Cascada Base ($1200)
+        dDiezmo += base * 0.20;
+        dSost += base * 0.30;
+        dProy += base * 0.20;
+        dPatr += base * 0.20;
+        dRes += base * 0.10;
+
+        // Distribución de Excedentes (Meses Buenos)
+        if (surplus > 0) {
+            dDiezmo += surplus * 0.20;
+            dProy += surplus * 0.40;
+            dPatr += surplus * 0.40;
+        }
+
+        const newBuckets = {
+            diezmo: safeNum(buckets.diezmo) + dDiezmo,
+            sostenimiento: safeNum(buckets.sostenimiento) + dSost,
+            proyectos: safeNum(buckets.proyectos) + dProy,
+            patrimonio: safeNum(buckets.patrimonio) + dPatr,
+            reserva: safeNum(buckets.reserva) + dRes
+        };
+
+        // Guardar la nueva data de cubetas
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
+        
+        // Guardar en el historial de distribuciones
+        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'distributions'), {
+            amountDistributed: amount,
+            breakdown: { diezmo: dDiezmo, sostenimiento: dSost, proyectos: dProy, patrimonio: dPatr, reserva: dRes },
+            dateStr: getLocalDateString(),
+            createdAt: serverTimestamp()
+        });
+
+        setDistributeAmount('');
+        alert("✅ Distribución aplicada. Revisa tus cubetas.");
+    } catch (error) {
+        console.error("Error al distribuir:", error);
+        alert("Error: " + error.message);
+    }
+    setIsProcessing(false);
+  };
+
   if (isGuest) return <div className="text-center p-10 text-slate-500">Presupuestos desactivados</div>;
-  
+
   return (
     <div className="space-y-4 pb-20 animate-in fade-in">
-      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-lg">
-        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2"><Landmark size={16} className="text-blue-400"/> Presupuesto Personal</h3>
-        <p className="text-xs text-slate-500 leading-relaxed">
-            Módulo estructural en construcción. Aquí operará la matriz 20/30/20/20/10 (Diezmo, Sostenimiento, Proyectos, Patrimonio, Reserva) 
-            y la distribución de excedentes sin alterar tu capital P2P.
-        </p>
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl">
+        <h3 className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-4 flex items-center gap-2"><Landmark size={14}/> Traspaso de Utilidades</h3>
+        <div className="flex gap-2 items-center">
+            <input 
+                type="number" 
+                value={distributeAmount} 
+                onChange={e=>setDistributeAmount(e.target.value)} 
+                placeholder="Ej: 1404.69" 
+                className="w-full bg-slate-950 p-3 rounded-xl text-white border border-slate-700 outline-none font-mono focus:border-blue-500"
+            />
+            <button onClick={handleDistribute} disabled={isProcessing} className="bg-blue-600 hover:bg-blue-500 p-3 rounded-xl text-white font-bold transition-all disabled:opacity-50">
+                {isProcessing ? <Loader2 size={20} className="animate-spin" /> : <PlusCircle size={20}/>}
+            </button>
+        </div>
+        <p className="text-[10px] text-slate-500 mt-2">La app detectará excedentes automáticamente y aplicará la regla 20/30/20/20/10.</p>
+      </div>
+
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider pl-1 mt-6">Mis Cubetas Personales</h3>
+      
+      <div className="grid grid-cols-2 gap-3">
+          <div className="bg-indigo-900/10 p-4 rounded-xl border border-indigo-500/20">
+              <p className="text-[10px] text-indigo-400 uppercase font-bold mb-1 flex items-center gap-1"><Heart size={12}/> Diezmo y Ofrendas</p>
+              <h2 className="text-xl font-bold text-white">${safeNum(buckets.diezmo).toFixed(2)}</h2>
+          </div>
+          
+          <div className="bg-orange-900/10 p-4 rounded-xl border border-orange-500/20">
+              <p className="text-[10px] text-orange-400 uppercase font-bold mb-1 flex items-center gap-1"><ShieldCheck size={12}/> Sostenimiento Fijo</p>
+              <h2 className="text-xl font-bold text-white">${safeNum(buckets.sostenimiento).toFixed(2)}</h2>
+          </div>
+
+          <div className="bg-emerald-900/10 p-4 rounded-xl border border-emerald-500/20">
+              <p className="text-[10px] text-emerald-400 uppercase font-bold mb-1 flex items-center gap-1"><TrendingUp size={12}/> Patrimonio</p>
+              <h2 className="text-xl font-bold text-white">${safeNum(buckets.patrimonio).toFixed(2)}</h2>
+          </div>
+
+          <div className="bg-fuchsia-900/10 p-4 rounded-xl border border-fuchsia-500/20">
+              <p className="text-[10px] text-fuchsia-400 uppercase font-bold mb-1 flex items-center gap-1"><Plane size={12}/> Proyectos / Viajes</p>
+              <h2 className="text-xl font-bold text-white">${safeNum(buckets.proyectos).toFixed(2)}</h2>
+          </div>
+
+          <div className="col-span-2 bg-red-900/10 p-4 rounded-xl border border-red-500/20">
+              <p className="text-[10px] text-red-400 uppercase font-bold mb-1 flex items-center gap-1"><AlertTriangle size={12}/> Fondo de Reserva / Emergencia</p>
+              <h2 className="text-xl font-bold text-white">${safeNum(buckets.reserva).toFixed(2)} <span className="text-xs text-slate-500 font-normal">/ Meta: $1000</span></h2>
+              <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden mt-2"><div className="h-full bg-red-500" style={{ width: `${Math.min((safeNum(buckets.reserva)/1000)*100, 100)}%` }}></div></div>
+          </div>
       </div>
     </div>
   );
