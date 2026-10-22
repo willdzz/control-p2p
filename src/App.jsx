@@ -341,7 +341,7 @@ export default function App() {
         {view === 'cierres' && <CierresModule transactions={transactions} snapshots={snapshots} inventory={inventory} onSaveSnapshot={handleSaveSnapshot} onTrade={handleTrade} onDeleteTx={handleDeleteTransaction} onDeleteSnap={handleDeleteSnapshot} isGuest={user.role === 'guest'} />}
         {view === 'graficas' && <GraficasModule transactions={transactions} snapshots={snapshots} inventory={inventory} goals={goals} onSaveGoals={handleUpdateGoals} isGuest={user.role === 'guest'} />}
         {view === 'deudas' && <LoansModule loans={loans} user={user} db={db} appId={appId} isGuest={user.role === 'guest'} onTrade={handleTrade} />}
-        {view === 'presupuestos' && <PresupuestosModule user={user} db={db} appId={appId} isGuest={user.role === 'guest'} />}
+        {view === 'presupuestos' && <PresupuestosModule user={user} db={db} appId={appId} isGuest={user.role === 'guest'} onTrade={handleTrade} inventory={inventory} />}
         {view === 'simulator' && <SimulatorModule />}
       </div>
 
@@ -1021,7 +1021,7 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
 }
 
 // --- MÓDULO 4: PRESUPUESTOS PERSONALES ---
-function PresupuestosModule({ user, db, appId, isGuest }) {
+function PresupuestosModule({ user, db, appId, isGuest, onTrade, inventory }) {
   const [buckets, setBuckets] = useState({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
   const [distributeAmount, setDistributeAmount] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -1038,7 +1038,7 @@ function PresupuestosModule({ user, db, appId, isGuest }) {
     if (isGuest) { alert("Modo Invitado: Distribución bloqueada."); return; }
     const amount = parseFloat(distributeAmount);
     if (!amount || amount <= 0) return;
-    if (!confirm(`¿Distribuir $${amount} USDT entre tus cubetas personales?`)) return;
+    if (!confirm(`¿Debitar $${amount} de tu Caja Operativa P2P y distribuirlo en tus cubetas personales?`)) return;
 
     setIsProcessing(true);
     try {
@@ -1053,7 +1053,7 @@ function PresupuestosModule({ user, db, appId, isGuest }) {
         dPatr += base * 0.20;
         dRes += base * 0.10;
 
-        // Distribución de Excedentes (Meses Buenos)
+        // Distribución de Excedentes
         if (surplus > 0) {
             dDiezmo += surplus * 0.20;
             dProy += surplus * 0.40;
@@ -1068,10 +1068,10 @@ function PresupuestosModule({ user, db, appId, isGuest }) {
             reserva: safeNum(buckets.reserva) + dRes
         };
 
-        // Guardar la nueva data de cubetas
+        // 1. Guardar la nueva data de cubetas
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
         
-        // Guardar en el historial de distribuciones
+        // 2. Guardar en el historial de distribuciones
         await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'distributions'), {
             amountDistributed: amount,
             breakdown: { diezmo: dDiezmo, sostenimiento: dSost, proyectos: dProy, patrimonio: dPatr, reserva: dRes },
@@ -1079,8 +1079,19 @@ function PresupuestosModule({ user, db, appId, isGuest }) {
             createdAt: serverTimestamp()
         });
 
+        // 3. Auto-débito de la caja operativa P2P (Simula un retiro de capital que no afecta el gasto)
+        await onTrade({
+            type: 'withdraw',
+            currency: 'USDT',
+            amountUSDT: amount,
+            amountBS: 0,
+            rate: inventory.avgPrice || 40,
+            description: 'Traspaso a Presupuesto Personal',
+            dateStr: getLocalDateString()
+        });
+
         setDistributeAmount('');
-        alert("✅ Distribución aplicada. Revisa tus cubetas.");
+        alert("✅ Capital debitado de P2P y distribuido en tus cubetas exitosamente.");
     } catch (error) {
         console.error("Error al distribuir:", error);
         alert("Error: " + error.message);
@@ -1099,14 +1110,14 @@ function PresupuestosModule({ user, db, appId, isGuest }) {
                 type="number" 
                 value={distributeAmount} 
                 onChange={e=>setDistributeAmount(e.target.value)} 
-                placeholder="Ej: 1404.69" 
+                placeholder="Ej: 1200" 
                 className="w-full bg-slate-950 p-3 rounded-xl text-white border border-slate-700 outline-none font-mono focus:border-blue-500"
             />
             <button onClick={handleDistribute} disabled={isProcessing} className="bg-blue-600 hover:bg-blue-500 p-3 rounded-xl text-white font-bold transition-all disabled:opacity-50">
                 {isProcessing ? <Loader2 size={20} className="animate-spin" /> : <PlusCircle size={20}/>}
             </button>
         </div>
-        <p className="text-[10px] text-slate-500 mt-2">La app detectará excedentes automáticamente y aplicará la regla 20/30/20/20/10.</p>
+        <p className="text-[10px] text-slate-500 mt-2">La app debitará este monto de tu Caja Operativa P2P y aplicará la regla 20/30/20/20/10.</p>
       </div>
 
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider pl-1 mt-6">Mis Cubetas Personales</h3>
