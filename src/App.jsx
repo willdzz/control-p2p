@@ -131,11 +131,11 @@ export default function App() {
       const expUSDT = data.currency === 'USDT' ? safeNum(data.amountUSDT) : (currentRate > 0 ? safeNum(data.amountBS) / currentRate : 0);
       data.expenseUSDT = expUSDT;
 
-      // LÓGICA DINÁMICA: Separación de Caja P2P vs Presupuesto Personal
       if (data.sourceBucket && data.sourceBucket !== 'p2p') {
           let newBuckets = { ...buckets };
           if (newBuckets[data.sourceBucket] !== undefined) {
-              newBuckets[data.sourceBucket] = Math.max(0, newBuckets[data.sourceBucket] - expUSDT);
+              // FIX: Se remueve el Math.max para permitir saldos negativos e igualar la asimetría al borrar
+              newBuckets[data.sourceBucket] -= expUSDT;
               await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
           }
       } else {
@@ -161,7 +161,6 @@ export default function App() {
       if (data.currency === 'USDT') newInv.usdt -= safeNum(data.amountUSDT);
       else newInv.ves -= safeNum(data.amountVES);
     } else if (data.type === 'loan_in') {
-      // FIX: Reparado el ingreso de USDT directos desde el módulo de cobro
       if (safeNum(data.amountVES) > 0) {
           newInv.ves += safeNum(data.amountVES);
       } else if (safeNum(data.amountUSDT) > 0) {
@@ -231,7 +230,6 @@ export default function App() {
        if (tx.currency === 'USDT') newInv.usdt += safeNum(tx.amountUSDT);
        else newInv.ves += safeNum(tx.amountVES);
     } else if (tx.type === 'loan_in') {
-       // FIX: Reversión de deudas en USDT cobradas
        if (safeNum(tx.amountVES) > 0) {
            newInv.ves -= safeNum(tx.amountVES);
        } else if (safeNum(tx.amountUSDT) > 0) {
@@ -288,12 +286,10 @@ export default function App() {
 
   const handleLogout = () => { if (user.role === 'guest') setUser(null); else signOut(auth); setView('cierres'); };
 
-  // CÁLCULO DE LA TRINIDAD CONTABLE
   const deferredCapital = useMemo(() => loans.reduce((acc, l) => acc + safeNum(l.amountUsd), 0), [loans]);
   const operativeEquity = (safeNum(inventory.usdt) + (safeNum(inventory.ves) / (safeNum(inventory.avgPrice) || 1)));
   const globalEquity = operativeEquity + deferredCapital;
 
-  // --- LOGIN SCREEN ---
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
@@ -304,7 +300,7 @@ export default function App() {
                 <Activity size={32} className="text-white" />
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
-            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.12 Dynamics</span></div>
+            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.13 Dynamics</span></div>
             <div className="space-y-3">
                 <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
@@ -1067,6 +1063,8 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
 function PresupuestosModule({ user, db, appId, buckets, isGuest, onTrade, inventory }) {
   const [distributeAmount, setDistributeAmount] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [editingBuckets, setEditingBuckets] = useState(false);
+  const [tempBuckets, setTempBuckets] = useState({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
 
   const handleDistribute = async () => {
     if (isGuest) { alert("Modo Invitado: Distribución bloqueada."); return; }
@@ -1129,28 +1127,52 @@ function PresupuestosModule({ user, db, appId, buckets, isGuest, onTrade, invent
         <p className="text-[10px] text-slate-500 mt-2">La app debitará este monto de tu Caja Operativa P2P y aplicará la regla 20/30/20/20/10.</p>
       </div>
 
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider pl-1 mt-6">Mis Cubetas Personales</h3>
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider pl-1 mt-6 flex justify-between items-center">
+          Mis Cubetas Personales
+          <button onClick={() => { setTempBuckets(buckets); setEditingBuckets(!editingBuckets); }} className={`p-2 transition-colors ${editingBuckets ? 'bg-blue-500/20 text-blue-400' : 'text-slate-400 hover:text-white bg-slate-800'} rounded-lg`}>
+              {editingBuckets ? <X size={14}/> : <Edit2 size={14}/>}
+          </button>
+      </h3>
+
+      {editingBuckets && (
+          <div className="bg-slate-800/50 p-4 rounded-xl border border-blue-500/30 mb-4 animate-in fade-in zoom-in-95">
+              <p className="text-xs text-blue-400 font-bold mb-3 uppercase text-center flex items-center justify-center gap-2"><Edit2 size={12}/> Ajuste Manual de Cubetas</p>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div><label className="text-[10px] text-slate-400">Diezmo</label><input type="number" value={tempBuckets.diezmo} onChange={e=>setTempBuckets({...tempBuckets, diezmo: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+                  <div><label className="text-[10px] text-slate-400">Sostenimiento</label><input type="number" value={tempBuckets.sostenimiento} onChange={e=>setTempBuckets({...tempBuckets, sostenimiento: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+                  <div><label className="text-[10px] text-slate-400">Proyectos</label><input type="number" value={tempBuckets.proyectos} onChange={e=>setTempBuckets({...tempBuckets, proyectos: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+                  <div><label className="text-[10px] text-slate-400">Patrimonio</label><input type="number" value={tempBuckets.patrimonio} onChange={e=>setTempBuckets({...tempBuckets, patrimonio: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+                  <div className="col-span-2"><label className="text-[10px] text-slate-400">Reserva</label><input type="number" value={tempBuckets.reserva} onChange={e=>setTempBuckets({...tempBuckets, reserva: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+              </div>
+              <button onClick={async () => {
+                  const newB = { diezmo: safeNum(tempBuckets.diezmo), sostenimiento: safeNum(tempBuckets.sostenimiento), proyectos: safeNum(tempBuckets.proyectos), patrimonio: safeNum(tempBuckets.patrimonio), reserva: safeNum(tempBuckets.reserva) };
+                  await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newB);
+                  setEditingBuckets(false);
+              }} className="w-full bg-blue-600 py-2 rounded-lg text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-500"><Save size={14}/> Guardar Ajustes</button>
+          </div>
+      )}
+
       <div className="grid grid-cols-2 gap-3">
           <div className="bg-indigo-900/10 p-4 rounded-xl border border-indigo-500/20">
               <p className="text-[10px] text-indigo-400 uppercase font-bold mb-1 flex items-center gap-1"><Heart size={12}/> Diezmo y Ofrendas</p>
-              <h2 className="text-xl font-bold text-white">${safeNum(buckets.diezmo).toFixed(2)}</h2>
+              <h2 className={`text-xl font-bold ${safeNum(buckets.diezmo) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.diezmo).toFixed(2)}</h2>
           </div>
           <div className="bg-orange-900/10 p-4 rounded-xl border border-orange-500/20">
               <p className="text-[10px] text-orange-400 uppercase font-bold mb-1 flex items-center gap-1"><ShieldCheck size={12}/> Sostenimiento Fijo</p>
-              <h2 className="text-xl font-bold text-white">${safeNum(buckets.sostenimiento).toFixed(2)}</h2>
+              <h2 className={`text-xl font-bold ${safeNum(buckets.sostenimiento) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.sostenimiento).toFixed(2)}</h2>
           </div>
           <div className="bg-emerald-900/10 p-4 rounded-xl border border-emerald-500/20">
               <p className="text-[10px] text-emerald-400 uppercase font-bold mb-1 flex items-center gap-1"><TrendingUp size={12}/> Patrimonio</p>
-              <h2 className="text-xl font-bold text-white">${safeNum(buckets.patrimonio).toFixed(2)}</h2>
+              <h2 className={`text-xl font-bold ${safeNum(buckets.patrimonio) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.patrimonio).toFixed(2)}</h2>
           </div>
           <div className="bg-fuchsia-900/10 p-4 rounded-xl border border-fuchsia-500/20">
               <p className="text-[10px] text-fuchsia-400 uppercase font-bold mb-1 flex items-center gap-1"><Plane size={12}/> Proyectos / Viajes</p>
-              <h2 className="text-xl font-bold text-white">${safeNum(buckets.proyectos).toFixed(2)}</h2>
+              <h2 className={`text-xl font-bold ${safeNum(buckets.proyectos) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.proyectos).toFixed(2)}</h2>
           </div>
           <div className="col-span-2 bg-red-900/10 p-4 rounded-xl border border-red-500/20">
               <p className="text-[10px] text-red-400 uppercase font-bold mb-1 flex items-center gap-1"><AlertTriangle size={12}/> Fondo de Reserva / Emergencia</p>
-              <h2 className="text-xl font-bold text-white">${safeNum(buckets.reserva).toFixed(2)} <span className="text-xs text-slate-500 font-normal">/ Meta: $1000</span></h2>
-              <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden mt-2"><div className="h-full bg-red-500" style={{ width: `${Math.min((safeNum(buckets.reserva)/1000)*100, 100)}%` }}></div></div>
+              <h2 className={`text-xl font-bold ${safeNum(buckets.reserva) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.reserva).toFixed(2)} <span className="text-xs text-slate-500 font-normal">/ Meta: $1000</span></h2>
+              <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden mt-2"><div className="h-full bg-red-500" style={{ width: `${Math.min((Math.max(0, safeNum(buckets.reserva))/1000)*100, 100)}%` }}></div></div>
           </div>
       </div>
     </div>
