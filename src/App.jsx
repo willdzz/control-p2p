@@ -54,8 +54,9 @@ export default function App() {
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // ESTADO GLOBAL DE PRESUPUESTOS (Cubetas)
+  // ESTADO GLOBAL DE PRESUPUESTOS (Cubetas y Detalles)
   const [buckets, setBuckets] = useState({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+  const [budgetDetails, setBudgetDetails] = useState({ proyectos: [], patrimonio: [] });
 
   const [editingInventory, setEditingInventory] = useState(false);
   const [tempInv, setTempInv] = useState({ usdt: '', ves: '', avgPrice: '' });
@@ -104,10 +105,15 @@ export default function App() {
       else setBuckets({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
     });
 
+    const unsubDetails = onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'details'), (snap) => {
+      if(snap.exists()) setBudgetDetails(snap.data());
+      else setBudgetDetails({ proyectos: [], patrimonio: [] });
+    });
+
     setLoading(false);
     clearTimeout(safetyTimeout);
 
-    return () => { unsubTx(); unsubSnap(); unsubInv(); unsubGoals(); unsubLoans(); unsubBuckets(); clearTimeout(safetyTimeout); };
+    return () => { unsubTx(); unsubSnap(); unsubInv(); unsubGoals(); unsubLoans(); unsubBuckets(); unsubDetails(); clearTimeout(safetyTimeout); };
   }, [user]);
 
   const handleTrade = async (data) => {
@@ -134,7 +140,6 @@ export default function App() {
       if (data.sourceBucket && data.sourceBucket !== 'p2p') {
           let newBuckets = { ...buckets };
           if (newBuckets[data.sourceBucket] !== undefined) {
-              // FIX: Se remueve el Math.max para permitir saldos negativos e igualar la asimetría al borrar
               newBuckets[data.sourceBucket] -= expUSDT;
               await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
           }
@@ -266,6 +271,7 @@ export default function App() {
         }
         setTransactions([]); setLoans([]); setSnapshots([]); setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
         setBuckets({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+        setBudgetDetails({ proyectos: [], patrimonio: [] });
         setEditingInventory(false); setLoading(false);
         alert("Reset completo.");
     } catch (e) { console.error(e); setLoading(false); }
@@ -286,10 +292,13 @@ export default function App() {
 
   const handleLogout = () => { if (user.role === 'guest') setUser(null); else signOut(auth); setView('cierres'); };
 
+  // CÁLCULO DE LA TRINIDAD CONTABLE + PATRIMONIO DE CUBETAS
   const deferredCapital = useMemo(() => loans.reduce((acc, l) => acc + safeNum(l.amountUsd), 0), [loans]);
   const operativeEquity = (safeNum(inventory.usdt) + (safeNum(inventory.ves) / (safeNum(inventory.avgPrice) || 1)));
-  const globalEquity = operativeEquity + deferredCapital;
+  const totalBuckets = safeNum(buckets.diezmo) + safeNum(buckets.sostenimiento) + safeNum(buckets.proyectos) + safeNum(buckets.patrimonio) + safeNum(buckets.reserva);
+  const globalEquity = operativeEquity + deferredCapital + totalBuckets;
 
+  // --- LOGIN SCREEN ---
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
@@ -300,7 +309,7 @@ export default function App() {
                 <Activity size={32} className="text-white" />
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
-            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.13 Dynamics</span></div>
+            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.14 Dynamics</span></div>
             <div className="space-y-3">
                 <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
@@ -346,7 +355,7 @@ export default function App() {
                         <p className="text-sm font-bold text-pink-400">${deferredCapital.toFixed(2)}</p>
                     </div>
                     <div className="bg-emerald-900/10 p-3 rounded-xl border border-emerald-900/30 flex flex-col justify-center">
-                        <p className="text-[9px] text-emerald-500/80 uppercase font-bold mb-1">Patrim. Global</p>
+                        <p className="text-[9px] text-emerald-500/80 uppercase font-bold mb-1" title="Incluye Operativa, Deudas y Cubetas">Patrim. Global</p>
                         <p className="text-sm font-bold text-emerald-400">${globalEquity.toFixed(2)}</p>
                     </div>
                 </div>
@@ -374,7 +383,7 @@ export default function App() {
         {view === 'cierres' && <CierresModule transactions={transactions} snapshots={snapshots} inventory={inventory} onSaveSnapshot={handleSaveSnapshot} onTrade={handleTrade} onDeleteTx={handleDeleteTransaction} onDeleteSnap={handleDeleteSnapshot} isGuest={user.role === 'guest'} />}
         {view === 'graficas' && <GraficasModule transactions={transactions} snapshots={snapshots} inventory={inventory} goals={goals} onSaveGoals={handleUpdateGoals} isGuest={user.role === 'guest'} />}
         {view === 'deudas' && <LoansModule loans={loans} user={user} db={db} appId={appId} isGuest={user.role === 'guest'} onTrade={handleTrade} />}
-        {view === 'presupuestos' && <PresupuestosModule user={user} db={db} appId={appId} buckets={buckets} isGuest={user.role === 'guest'} onTrade={handleTrade} inventory={inventory} />}
+        {view === 'presupuestos' && <PresupuestosModule user={user} db={db} appId={appId} buckets={buckets} budgetDetails={budgetDetails} transactions={transactions} isGuest={user.role === 'guest'} onTrade={handleTrade} inventory={inventory} />}
         {view === 'simulator' && <SimulatorModule />}
       </div>
 
@@ -819,7 +828,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
             </div>
             <div className="space-y-4">
               {Object.keys(monthData.byCategory).length === 0 && <p className="text-center text-xs text-slate-600">Sin fugas registradas en {monthName}.</p>}
-              {['Comida', 'Bodega', 'Frutas', 'Club', 'Servicios', 'Compras', 'Ropa', 'Ocio', 'Transporte', 'Salud', 'Caridad', 'Regalos', 'Viajes', 'Diezmo', 'Otros'].map(catId => {
+              {['Comida', 'Bodega', 'Frutas', 'Club', 'Servicios', 'Alquiler', 'Compras', 'Ropa', 'Ocio', 'Transporte', 'Salud', 'Caridad', 'Regalos', 'Viajes', 'Diezmo', 'Otros'].map(catId => {
                 const amount = monthData.byCategory[catId] || 0;
                 const percent = monthData.totalPeriodExpenses > 0 ? (amount / monthData.totalPeriodExpenses) * 100 : 0;
                 if (amount === 0) return null;
@@ -830,6 +839,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
                 if(catId==='Frutas') { color='text-lime-400'; bar='bg-lime-500'; }
                 if(catId==='Club') { color='text-fuchsia-400'; bar='bg-fuchsia-500'; }
                 if(catId==='Servicios') { color='text-yellow-400'; bar='bg-yellow-500'; }
+                if(catId==='Alquiler') { color='text-indigo-400'; bar='bg-indigo-500'; }
                 if(catId==='Compras') { color='text-emerald-400'; bar='bg-emerald-500'; }
                 if(catId==='Ropa') { color='text-pink-400'; bar='bg-pink-500'; }
                 if(catId==='Ocio') { color='text-red-400'; bar='bg-red-500'; }
@@ -1060,11 +1070,21 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
 }
 
 // --- MÓDULO 4: PRESUPUESTOS PERSONALES ---
-function PresupuestosModule({ user, db, appId, buckets, isGuest, onTrade, inventory }) {
+function PresupuestosModule({ user, db, appId, buckets, budgetDetails, transactions, isGuest, onTrade, inventory }) {
   const [distributeAmount, setDistributeAmount] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [editingBuckets, setEditingBuckets] = useState(false);
   const [tempBuckets, setTempBuckets] = useState({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+  const [activeCard, setActiveCard] = useState(null);
+  
+  // Estados para nuevos items
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemTarget, setNewItemTarget] = useState('');
+  const [fundAmount, setFundAmount] = useState('');
+
+  const updateDetails = async (newDetails) => {
+    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'details'), newDetails);
+  };
 
   const handleDistribute = async () => {
     if (isGuest) { alert("Modo Invitado: Distribución bloqueada."); return; }
@@ -1078,13 +1098,8 @@ function PresupuestosModule({ user, db, appId, buckets, isGuest, onTrade, invent
         const base = Math.min(amount, 1200);
         const surplus = Math.max(0, amount - 1200);
 
-        // Cascada Base
         dDiezmo += base * 0.20; dSost += base * 0.30; dProy += base * 0.20; dPatr += base * 0.20; dRes += base * 0.10;
-
-        // Distribución de Excedentes
-        if (surplus > 0) {
-            dDiezmo += surplus * 0.20; dProy += surplus * 0.40; dPatr += surplus * 0.40;
-        }
+        if (surplus > 0) { dDiezmo += surplus * 0.20; dProy += surplus * 0.40; dPatr += surplus * 0.40; }
 
         const newBuckets = {
             diezmo: safeNum(buckets.diezmo) + dDiezmo,
@@ -1095,24 +1110,198 @@ function PresupuestosModule({ user, db, appId, buckets, isGuest, onTrade, invent
         };
 
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
-        
-        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'distributions'), {
-            amountDistributed: amount, breakdown: { diezmo: dDiezmo, sostenimiento: dSost, proyectos: dProy, patrimonio: dPatr, reserva: dRes },
-            dateStr: getLocalDateString(), createdAt: serverTimestamp()
-        });
-
-        await onTrade({
-            type: 'withdraw', currency: 'USDT', amountUSDT: amount, amountBS: 0,
-            rate: inventory.avgPrice || 40, description: 'Traspaso a Presupuesto Personal', dateStr: getLocalDateString()
-        });
-
+        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'distributions'), { amountDistributed: amount, breakdown: { diezmo: dDiezmo, sostenimiento: dSost, proyectos: dProy, patrimonio: dPatr, reserva: dRes }, dateStr: getLocalDateString(), createdAt: serverTimestamp() });
+        await onTrade({ type: 'withdraw', currency: 'USDT', amountUSDT: amount, amountBS: 0, rate: inventory.avgPrice || 40, description: 'Traspaso a Presupuesto Personal', dateStr: getLocalDateString() });
         setDistributeAmount('');
-        alert("✅ Capital debitado de P2P y distribuido en tus cubetas exitosamente.");
-    } catch (error) { console.error("Error al distribuir:", error); alert("Error: " + error.message); }
+        alert("✅ Capital debitado de P2P y distribuido.");
+    } catch (error) { alert("Error: " + error.message); }
     setIsProcessing(false);
   };
 
+  const spentThisMonthSostenimiento = useMemo(() => {
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+    const sostTx = transactions.filter(t => t.sourceBucket === 'sostenimiento' && t.dateStr >= firstDay);
+    return {
+        alquiler: sostTx.filter(t => t.category === 'Alquiler' || t.category === 'Servicios').reduce((a,b)=>a+safeNum(b.expenseUSDT),0),
+        mercado: sostTx.filter(t => ['Comida','Bodega','Frutas'].includes(t.category)).reduce((a,b)=>a+safeNum(b.expenseUSDT),0),
+        salidas: sostTx.filter(t => ['Ocio','Club'].includes(t.category)).reduce((a,b)=>a+safeNum(b.expenseUSDT),0)
+    };
+  }, [transactions]);
+
   if (isGuest) return <div className="text-center p-10 text-slate-500">Presupuestos desactivados</div>;
+
+  if (activeCard === 'sostenimiento') {
+      return (
+          <div className="space-y-4 pb-20 animate-in slide-in-from-right">
+              <button onClick={()=>setActiveCard(null)} className="text-slate-400 flex items-center gap-2 hover:text-white"><ChevronLeft size={16}/> Volver</button>
+              <div className="bg-orange-900/10 p-5 rounded-2xl border border-orange-500/20">
+                  <h3 className="text-lg font-bold text-orange-400 flex items-center gap-2 mb-4"><ShieldCheck size={18}/> Sostenimiento Fijo</h3>
+                  <div className="space-y-6">
+                      <div>
+                          <div className="flex justify-between text-xs mb-1"><span className="text-slate-300">Alquiler (Ref $140)</span><span className="text-orange-300 font-mono">${spentThisMonthSostenimiento.alquiler.toFixed(2)}</span></div>
+                          <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden"><div className="h-full bg-orange-500" style={{width:`${Math.min((spentThisMonthSostenimiento.alquiler/140)*100, 100)}%`}}></div></div>
+                      </div>
+                      <div>
+                          <div className="flex justify-between text-xs mb-1"><span className="text-slate-300">Mercado (Ref $150)</span><span className="text-orange-300 font-mono">${spentThisMonthSostenimiento.mercado.toFixed(2)}</span></div>
+                          <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden"><div className="h-full bg-orange-500" style={{width:`${Math.min((spentThisMonthSostenimiento.mercado/150)*100, 100)}%`}}></div></div>
+                      </div>
+                      <div>
+                          <div className="flex justify-between text-xs mb-1"><span className="text-slate-300">Salidas / Ocio (Límite $70)</span><span className={`${spentThisMonthSostenimiento.salidas > 70 ? 'text-red-400 font-bold' : 'text-orange-300'} font-mono`}>${spentThisMonthSostenimiento.salidas.toFixed(2)} / $70</span></div>
+                          <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden"><div className={`h-full ${spentThisMonthSostenimiento.salidas > 70 ? 'bg-red-500' : 'bg-orange-500'}`} style={{width:`${Math.min((spentThisMonthSostenimiento.salidas/70)*100, 100)}%`}}></div></div>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      );
+  }
+
+  if (activeCard === 'proyectos') {
+      const proyList = budgetDetails.proyectos || [];
+      const allocated = proyList.reduce((acc, p) => acc + safeNum(p.funded), 0);
+      const unallocated = safeNum(buckets.proyectos) - allocated;
+      
+      const addProject = async () => {
+          if(!newItemName || !newItemTarget) return;
+          const newList = [...proyList, { id: Date.now().toString(), name: newItemName, target: parseFloat(newItemTarget), funded: 0 }];
+          await updateDetails({...budgetDetails, proyectos: newList});
+          setNewItemName(''); setNewItemTarget('');
+      };
+      
+      const fundProject = async (id) => {
+          const amt = parseFloat(fundAmount);
+          if(!amt || amt > unallocated) return alert("Monto inválido o supera capital sin asignar.");
+          const newList = proyList.map(p => p.id === id ? {...p, funded: p.funded + amt} : p);
+          await updateDetails({...budgetDetails, proyectos: newList});
+          setFundAmount('');
+      };
+
+      const deleteProject = async (id) => {
+          if(!confirm("¿Borrar meta y devolver fondos a capital sin asignar?")) return;
+          const newList = proyList.filter(p => p.id !== id);
+          await updateDetails({...budgetDetails, proyectos: newList});
+      };
+
+      return (
+          <div className="space-y-4 pb-20 animate-in slide-in-from-right">
+              <button onClick={()=>setActiveCard(null)} className="text-slate-400 flex items-center gap-2 hover:text-white"><ChevronLeft size={16}/> Volver</button>
+              <div className="bg-fuchsia-900/10 p-5 rounded-2xl border border-fuchsia-500/20">
+                  <h3 className="text-lg font-bold text-fuchsia-400 flex items-center gap-2 mb-2"><Plane size={18}/> Proyectos y Viajes</h3>
+                  <div className="bg-slate-900 p-3 rounded-lg flex justify-between items-center border border-slate-800">
+                      <span className="text-xs text-slate-400">Capital Sin Asignar</span><span className="font-mono font-bold text-fuchsia-300">${unallocated.toFixed(2)}</span>
+                  </div>
+              </div>
+              
+              <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                  <p className="text-xs font-bold text-slate-400 mb-2">Nueva Meta</p>
+                  <div className="flex gap-2">
+                      <input type="text" placeholder="Ej: Boda" value={newItemName} onChange={e=>setNewItemName(e.target.value)} className="flex-1 bg-slate-950 p-2 rounded text-white text-xs outline-none border border-slate-700"/>
+                      <input type="number" placeholder="Meta $" value={newItemTarget} onChange={e=>setNewItemTarget(e.target.value)} className="w-20 bg-slate-950 p-2 rounded text-white text-xs outline-none border border-slate-700"/>
+                      <button onClick={addProject} className="bg-fuchsia-600 p-2 rounded text-white"><PlusCircle size={16}/></button>
+                  </div>
+              </div>
+
+              <div className="space-y-2">
+                  {proyList.map(p => (
+                      <div key={p.id} className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                          <div className="flex justify-between items-center mb-2">
+                              <span className="font-bold text-sm text-slate-200">{p.name}</span>
+                              <span className="font-mono text-xs text-fuchsia-400">${p.funded.toFixed(2)} / ${p.target}</span>
+                          </div>
+                          <div className="h-1.5 w-full bg-slate-950 rounded-full overflow-hidden mb-3"><div className="h-full bg-fuchsia-500" style={{width:`${Math.min((p.funded/p.target)*100, 100)}%`}}></div></div>
+                          <div className="flex gap-2">
+                              <input type="number" placeholder="$ Asignar" value={fundAmount} onChange={e=>setFundAmount(e.target.value)} className="w-24 bg-slate-950 p-1.5 rounded text-white text-xs outline-none border border-slate-700"/>
+                              <button onClick={()=>fundProject(p.id)} className="bg-slate-800 text-fuchsia-400 px-3 py-1.5 rounded text-xs font-bold hover:bg-slate-700">Fondear</button>
+                              <button onClick={()=>deleteProject(p.id)} className="ml-auto text-slate-600 hover:text-red-400 p-1.5"><Trash2 size={14}/></button>
+                          </div>
+                      </div>
+                  ))}
+              </div>
+          </div>
+      );
+  }
+
+  if (activeCard === 'patrimonio') {
+      const patrList = budgetDetails.patrimonio || [];
+      const allocated = patrList.reduce((acc, p) => acc + safeNum(p.balance), 0);
+      const unallocated = safeNum(buckets.patrimonio) - allocated;
+      
+      const addAsset = async () => {
+          if(!newItemName) return;
+          const newList = [...patrList, { id: Date.now().toString(), name: newItemName, balance: 0 }];
+          await updateDetails({...budgetDetails, patrimonio: newList});
+          setNewItemName('');
+      };
+      
+      const updateAssetBalance = async (id, newBalance) => {
+          // Ajusta el balance del activo modificando indirectamente el saldo total de la cubeta Patrimonio
+          const oldBalance = patrList.find(p=>p.id===id).balance;
+          const diff = parseFloat(newBalance) - oldBalance;
+          const newList = patrList.map(p => p.id === id ? {...p, balance: parseFloat(newBalance)} : p);
+          await updateDetails({...budgetDetails, patrimonio: newList});
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), {...buckets, patrimonio: safeNum(buckets.patrimonio) + diff});
+      };
+
+      const deleteAsset = async (id) => {
+          if(!confirm("¿Borrar activo? (Su valor volverá a Capital por Invertir)")) return;
+          const newList = patrList.filter(p => p.id !== id);
+          await updateDetails({...budgetDetails, patrimonio: newList});
+      };
+
+      return (
+          <div className="space-y-4 pb-20 animate-in slide-in-from-right">
+              <button onClick={()=>setActiveCard(null)} className="text-slate-400 flex items-center gap-2 hover:text-white"><ChevronLeft size={16}/> Volver</button>
+              <div className="bg-emerald-900/10 p-5 rounded-2xl border border-emerald-500/20">
+                  <h3 className="text-lg font-bold text-emerald-400 flex items-center gap-2 mb-2"><TrendingUp size={18}/> Portafolio de Inversión</h3>
+                  <div className="bg-slate-900 p-3 rounded-lg flex justify-between items-center border border-slate-800">
+                      <span className="text-xs text-slate-400">Capital por Invertir</span><span className="font-mono font-bold text-emerald-300">${unallocated.toFixed(2)}</span>
+                  </div>
+              </div>
+              
+              <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+                  <p className="text-xs font-bold text-slate-400 mb-2">Nuevo Activo</p>
+                  <div className="flex gap-2">
+                      <input type="text" placeholder="Ej: Airtm USDC" value={newItemName} onChange={e=>setNewItemName(e.target.value)} className="flex-1 bg-slate-950 p-2 rounded text-white text-xs outline-none border border-slate-700"/>
+                      <button onClick={addAsset} className="bg-emerald-600 p-2 rounded text-white"><PlusCircle size={16}/></button>
+                  </div>
+              </div>
+
+              <div className="space-y-2">
+                  {patrList.map(p => (
+                      <div key={p.id} className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex flex-col gap-2">
+                          <div className="flex justify-between items-center">
+                              <span className="font-bold text-sm text-slate-200">{p.name}</span>
+                              <button onClick={()=>deleteAsset(p.id)} className="text-slate-600 hover:text-red-400"><Trash2 size={14}/></button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                              <span className="text-xs text-slate-500">Valor USD:</span>
+                              <input type="number" defaultValue={p.balance} onBlur={e=>updateAssetBalance(p.id, e.target.value)} className="w-full bg-slate-950 p-2 rounded text-white font-mono text-sm outline-none border border-slate-700 focus:border-emerald-500"/>
+                          </div>
+                      </div>
+                  ))}
+              </div>
+          </div>
+      );
+  }
+
+  if (activeCard === 'diezmo') {
+      const diezmo = safeNum(buckets.diezmo);
+      return (
+          <div className="space-y-4 pb-20 animate-in slide-in-from-right">
+              <button onClick={()=>setActiveCard(null)} className="text-slate-400 flex items-center gap-2 hover:text-white"><ChevronLeft size={16}/> Volver</button>
+              <div className="bg-indigo-900/10 p-5 rounded-2xl border border-indigo-500/20">
+                  <h3 className="text-lg font-bold text-indigo-400 flex items-center gap-2 mb-2"><Heart size={18}/> Diezmo y Ofrendas</h3>
+                  <h2 className="text-3xl font-black text-white mb-4">${diezmo.toFixed(2)}</h2>
+                  <div className="space-y-3 bg-slate-900/50 p-4 rounded-xl border border-slate-800">
+                      <p className="text-[10px] text-slate-400 uppercase font-bold mb-2">Sugerencia de Distribución</p>
+                      <div className="flex justify-between text-xs"><span className="text-slate-300">Iglesia Local (50%)</span><span className="font-mono text-indigo-300">${(diezmo*0.5).toFixed(2)}</span></div>
+                      <div className="flex justify-between text-xs"><span className="text-slate-300">Ofrenda de Amor (45%)</span><span className="font-mono text-indigo-300">${(diezmo*0.45).toFixed(2)}</span></div>
+                      <div className="flex justify-between text-xs"><span className="text-slate-300">Apoyo Social (5%)</span><span className="font-mono text-indigo-300">${(diezmo*0.05).toFixed(2)}</span></div>
+                  </div>
+              </div>
+          </div>
+      );
+  }
 
   return (
     <div className="space-y-4 pb-20 animate-in fade-in">
@@ -1124,7 +1313,6 @@ function PresupuestosModule({ user, db, appId, buckets, isGuest, onTrade, invent
                 {isProcessing ? <Loader2 size={20} className="animate-spin" /> : <PlusCircle size={20}/>}
             </button>
         </div>
-        <p className="text-[10px] text-slate-500 mt-2">La app debitará este monto de tu Caja Operativa P2P y aplicará la regla 20/30/20/20/10.</p>
       </div>
 
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider pl-1 mt-6 flex justify-between items-center">
@@ -1153,19 +1341,19 @@ function PresupuestosModule({ user, db, appId, buckets, isGuest, onTrade, invent
       )}
 
       <div className="grid grid-cols-2 gap-3">
-          <div className="bg-indigo-900/10 p-4 rounded-xl border border-indigo-500/20">
+          <div onClick={()=>setActiveCard('diezmo')} className="bg-indigo-900/10 p-4 rounded-xl border border-indigo-500/20 cursor-pointer hover:bg-indigo-900/20 transition-colors">
               <p className="text-[10px] text-indigo-400 uppercase font-bold mb-1 flex items-center gap-1"><Heart size={12}/> Diezmo y Ofrendas</p>
               <h2 className={`text-xl font-bold ${safeNum(buckets.diezmo) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.diezmo).toFixed(2)}</h2>
           </div>
-          <div className="bg-orange-900/10 p-4 rounded-xl border border-orange-500/20">
+          <div onClick={()=>setActiveCard('sostenimiento')} className="bg-orange-900/10 p-4 rounded-xl border border-orange-500/20 cursor-pointer hover:bg-orange-900/20 transition-colors">
               <p className="text-[10px] text-orange-400 uppercase font-bold mb-1 flex items-center gap-1"><ShieldCheck size={12}/> Sostenimiento Fijo</p>
               <h2 className={`text-xl font-bold ${safeNum(buckets.sostenimiento) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.sostenimiento).toFixed(2)}</h2>
           </div>
-          <div className="bg-emerald-900/10 p-4 rounded-xl border border-emerald-500/20">
+          <div onClick={()=>setActiveCard('patrimonio')} className="bg-emerald-900/10 p-4 rounded-xl border border-emerald-500/20 cursor-pointer hover:bg-emerald-900/20 transition-colors">
               <p className="text-[10px] text-emerald-400 uppercase font-bold mb-1 flex items-center gap-1"><TrendingUp size={12}/> Patrimonio</p>
               <h2 className={`text-xl font-bold ${safeNum(buckets.patrimonio) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.patrimonio).toFixed(2)}</h2>
           </div>
-          <div className="bg-fuchsia-900/10 p-4 rounded-xl border border-fuchsia-500/20">
+          <div onClick={()=>setActiveCard('proyectos')} className="bg-fuchsia-900/10 p-4 rounded-xl border border-fuchsia-500/20 cursor-pointer hover:bg-fuchsia-900/20 transition-colors">
               <p className="text-[10px] text-fuchsia-400 uppercase font-bold mb-1 flex items-center gap-1"><Plane size={12}/> Proyectos / Viajes</p>
               <h2 className={`text-xl font-bold ${safeNum(buckets.proyectos) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.proyectos).toFixed(2)}</h2>
           </div>
@@ -1396,6 +1584,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
       { id: 'Frutas', icon: <Utensils size={16}/>, bg: 'bg-lime-600', border: 'border-lime-500' }, 
       { id: 'Club', icon: <Heart size={16}/>, bg: 'bg-fuchsia-600', border: 'border-fuchsia-500' }, 
       { id: 'Servicios', icon: <Zap size={16}/>, bg: 'bg-yellow-600', border: 'border-yellow-500' }, 
+      { id: 'Alquiler', icon: <Landmark size={16}/>, bg: 'bg-indigo-600', border: 'border-indigo-500' },
       { id: 'Compras', icon: <ShoppingBag size={16}/>, bg: 'bg-emerald-600', border: 'border-emerald-500' }, 
       { id: 'Ropa', icon: <Shirt size={16}/>, bg: 'bg-pink-600', border: 'border-pink-500' }, 
       { id: 'Ocio', icon: <Gamepad2 size={16}/>, bg: 'bg-red-600', border: 'border-red-500' }, 
@@ -1444,7 +1633,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
                         <option value="p2p">💼 Caja Operativa P2P (Afecta Ganancia P2P)</option>
                     </select>
                 </div>
-                <div className="grid grid-cols-3 gap-2">{categories.map(cat => (<button key={cat.id} onClick={() => setExpenseCategory(cat.id)} className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs font-bold transition-all ${expenseCategory === cat.id ? `${cat.bg} ${cat.border} text-white shadow-md` : `bg-slate-950 border-slate-700 text-slate-500`}`}>{cat.icon} {cat.id}</button>))}</div>
+                <div className="grid grid-cols-4 gap-2">{categories.map(cat => (<button key={cat.id} onClick={() => setExpenseCategory(cat.id)} className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs font-bold transition-all ${expenseCategory === cat.id ? `${cat.bg} ${cat.border} text-white shadow-md` : `bg-slate-950 border-slate-700 text-slate-500`}`}>{cat.icon} {cat.id}</button>))}</div>
                 </>
             )}
             
