@@ -133,14 +133,12 @@ export default function App() {
 
       // LÓGICA DINÁMICA: Separación de Caja P2P vs Presupuesto Personal
       if (data.sourceBucket && data.sourceBucket !== 'p2p') {
-          // Descuenta de la cubeta personal, NO toca el inventario P2P
           let newBuckets = { ...buckets };
           if (newBuckets[data.sourceBucket] !== undefined) {
               newBuckets[data.sourceBucket] = Math.max(0, newBuckets[data.sourceBucket] - expUSDT);
               await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
           }
       } else {
-          // Descuenta de la caja operativa P2P (Método clásico)
           if (data.currency === 'USDT') {
               newInv.usdt -= safeNum(data.amountUSDT);
           } else {
@@ -163,7 +161,12 @@ export default function App() {
       if (data.currency === 'USDT') newInv.usdt -= safeNum(data.amountUSDT);
       else newInv.ves -= safeNum(data.amountVES);
     } else if (data.type === 'loan_in') {
-      newInv.ves += safeNum(data.amountVES);
+      // FIX: Reparado el ingreso de USDT directos desde el módulo de cobro
+      if (safeNum(data.amountVES) > 0) {
+          newInv.ves += safeNum(data.amountVES);
+      } else if (safeNum(data.amountUSDT) > 0) {
+          newInv.usdt += safeNum(data.amountUSDT);
+      }
     }
     
     data.avgPriceAtMoment = newInv.avgPrice;
@@ -203,14 +206,12 @@ export default function App() {
       newInv.ves -= (safeNum(tx.totalBS) || (safeNum(tx.amountUSDT) * safeNum(tx.rate)));
     } else if (tx.type === 'expense') {
       if (tx.sourceBucket && tx.sourceBucket !== 'p2p') {
-          // Revertir a la cubeta personal
           let newBuckets = { ...buckets };
           if (newBuckets[tx.sourceBucket] !== undefined) {
               newBuckets[tx.sourceBucket] += safeNum(tx.expenseUSDT);
               await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
           }
       } else {
-          // Revertir a la caja operativa P2P
           if (tx.currency === 'USDT' || tx.amountUSDT > 0) newInv.usdt += safeNum(tx.amountUSDT);
           else newInv.ves += safeNum(tx.amountBS);
       }
@@ -230,7 +231,12 @@ export default function App() {
        if (tx.currency === 'USDT') newInv.usdt += safeNum(tx.amountUSDT);
        else newInv.ves += safeNum(tx.amountVES);
     } else if (tx.type === 'loan_in') {
-       newInv.ves -= safeNum(tx.amountVES);
+       // FIX: Reversión de deudas en USDT cobradas
+       if (safeNum(tx.amountVES) > 0) {
+           newInv.ves -= safeNum(tx.amountVES);
+       } else if (safeNum(tx.amountUSDT) > 0) {
+           newInv.usdt -= safeNum(tx.amountUSDT);
+       }
     }
     
     await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id));
@@ -298,7 +304,7 @@ export default function App() {
                 <Activity size={32} className="text-white" />
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
-            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.11 Dynamics</span></div>
+            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.12 Dynamics</span></div>
             <div className="space-y-3">
                 <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
@@ -531,7 +537,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                                                      </span>
                                                  )}
                                                  {item.type === 'expense' || item.type === 'withdraw' ? `${item.description || 'Sin nota'} ${item.currency === 'VES' && item.rate ? `(Tasa: ${item.rate})` : ''}` : 
-                                                  item.type === 'loan_in' ? `Ganancia cambiaria: +$${safeNum(item.devaluationProfit).toFixed(2)}` :
+                                                  item.type === 'loan_in' ? (safeNum(item.amountVES) > 0 ? `Ganancia cambiaria: +$${safeNum(item.devaluationProfit).toFixed(2)}` : 'Pago recibido en USDT') :
                                                   `Tasa: ${safeNum(item.rate)}`}
                                              </p>
                                            </div>
@@ -541,7 +547,7 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                                                <p className={`font-mono font-bold ${item.type === 'expense' || item.type === 'loan_out' || item.type === 'withdraw' ? 'text-red-400' : 'text-slate-200'}`}>
                                                   {item.type === 'expense' || item.type === 'withdraw' ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountBS).toLocaleString()}`) : 
                                                    item.type === 'loan_out' ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountVES).toLocaleString()}`) : 
-                                                   item.type === 'loan_in' ? `+Bs ${safeNum(item.amountVES).toLocaleString()}` :
+                                                   item.type === 'loan_in' ? (safeNum(item.amountVES) > 0 ? `+Bs ${safeNum(item.amountVES).toLocaleString()}` : `+$${safeNum(item.amountUSDT).toFixed(2)}`) :
                                                    item.type === 'capital' ? `+$${safeNum(item.amount)}` : 
                                                    `$${safeNum(item.amountUSDT).toFixed(2)}`}
                                                </p>
@@ -606,7 +612,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
       
       let currentEquity = startingCapital;
       let totalPeriodProfit = 0;
-      let totalPeriodExpenses = 0; // Total para la gráfica de pastel
+      let totalPeriodExpenses = 0; 
       let totalDeposits = 0;
       let totalWithdrawals = 0;
       let totalLoansOut = 0;
@@ -634,11 +640,9 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
 
           const dayExpenses = transactions.filter(t => t.type === 'expense' && t.dateStr === dateStr);
           
-          // Lógica crucial: Separar gastos para la matemática
           const sumAllExpenses = dayExpenses.reduce((acc, t) => acc + (t.expenseUSDT || safeNum(t.amountBS)/40), 0);
           totalPeriodExpenses += sumAllExpenses;
 
-          // Solo los gastos que afectaron P2P se suman a la ganancia diaria
           const p2pExpenses = dayExpenses.filter(t => !t.sourceBucket || t.sourceBucket === 'p2p');
           const sumP2pExpenses = p2pExpenses.reduce((acc, t) => acc + (t.expenseUSDT || safeNum(t.amountBS)/40), 0);
 
@@ -655,7 +659,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
 
           let dailyProfit = 0;
           if (daySnaps.length > 0) {
-             // Usamos sumP2pExpenses para no inflar la ganancia operativa con el mercado o alquiler
              dailyProfit = (endOfDayEquity - currentEquity) + sumP2pExpenses + dayLoansOut + dayWithdrawals - sumDeposits - dayLoansInPrincipal;
              currentEquity = endOfDayEquity; 
           } else {
@@ -1344,7 +1347,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
   const [expenseCategory, setExpenseCategory] = useState('Comida'); 
   const [expenseNote, setExpenseNote] = useState(''); 
   const [expenseCurrency, setExpenseCurrency] = useState('VES');
-  const [sourceBucket, setSourceBucket] = useState('sostenimiento'); // FIX: Selector de origen
+  const [sourceBucket, setSourceBucket] = useState('sostenimiento'); 
   
   const [tradeDate, setTradeDate] = useState(getLocalDateString()); 
 
@@ -1407,7 +1410,6 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
                 {expenseCurrency === 'VES' && (<div className="flex-1"><label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Manual (Opcional)</label><input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} placeholder="Ej: 40.5" className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/></div>)}
             </div>
 
-            {/* FIX: Selector de origen de fondos integrado */}
             {mode === 'expense' && (
                 <>
                 <div className="bg-slate-950 p-3 rounded-lg border border-slate-700">
