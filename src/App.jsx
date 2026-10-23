@@ -54,6 +54,9 @@ export default function App() {
   const [loans, setLoans] = useState([]);
   const [loading, setLoading] = useState(true);
   
+  // ESTADO GLOBAL DE PRESUPUESTOS (Cubetas)
+  const [buckets, setBuckets] = useState({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+
   const [editingInventory, setEditingInventory] = useState(false);
   const [tempInv, setTempInv] = useState({ usdt: '', ves: '', avgPrice: '' });
 
@@ -96,10 +99,15 @@ export default function App() {
     const qLoans = query(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), orderBy('createdAt', 'desc'));
     const unsubLoans = onSnapshot(qLoans, (snap) => setLoans(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
 
+    const unsubBuckets = onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), (snap) => {
+      if(snap.exists()) setBuckets(snap.data());
+      else setBuckets({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+    });
+
     setLoading(false);
     clearTimeout(safetyTimeout);
 
-    return () => { unsubTx(); unsubSnap(); unsubInv(); unsubGoals(); unsubLoans(); clearTimeout(safetyTimeout); };
+    return () => { unsubTx(); unsubSnap(); unsubInv(); unsubGoals(); unsubLoans(); unsubBuckets(); clearTimeout(safetyTimeout); };
   }, [user]);
 
   const handleTrade = async (data) => {
@@ -119,13 +127,25 @@ export default function App() {
       data.profitUSDT = safeNum(data.rate) > 0 ? (revenueVES - costOfSold) / safeNum(data.rate) : 0;
       newInv.usdt -= (safeNum(data.amountUSDT) + safeNum(data.feeUSDT)); newInv.ves += revenueVES;
     } else if (data.type === 'expense') {
-      if (data.currency === 'USDT') {
-        newInv.usdt -= safeNum(data.amountUSDT);
-        data.expenseUSDT = safeNum(data.amountUSDT);
+      const currentRate = safeNum(data.rate) > 0 ? safeNum(data.rate) : newInv.avgPrice;
+      const expUSDT = data.currency === 'USDT' ? safeNum(data.amountUSDT) : (currentRate > 0 ? safeNum(data.amountBS) / currentRate : 0);
+      data.expenseUSDT = expUSDT;
+
+      // LÓGICA DINÁMICA: Separación de Caja P2P vs Presupuesto Personal
+      if (data.sourceBucket && data.sourceBucket !== 'p2p') {
+          // Descuenta de la cubeta personal, NO toca el inventario P2P
+          let newBuckets = { ...buckets };
+          if (newBuckets[data.sourceBucket] !== undefined) {
+              newBuckets[data.sourceBucket] = Math.max(0, newBuckets[data.sourceBucket] - expUSDT);
+              await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
+          }
       } else {
-        newInv.ves -= safeNum(data.amountBS);
-        const currentRate = safeNum(data.rate) > 0 ? safeNum(data.rate) : newInv.avgPrice;
-        data.expenseUSDT = currentRate > 0 ? safeNum(data.amountBS) / currentRate : 0;
+          // Descuenta de la caja operativa P2P (Método clásico)
+          if (data.currency === 'USDT') {
+              newInv.usdt -= safeNum(data.amountUSDT);
+          } else {
+              newInv.ves -= safeNum(data.amountBS);
+          }
       }
     } else if (data.type === 'capital') {
       if (data.currency === 'VES') newInv.ves += safeNum(data.amount);
@@ -182,8 +202,18 @@ export default function App() {
       newInv.usdt += (safeNum(tx.amountUSDT) + safeNum(tx.feeUSDT));
       newInv.ves -= (safeNum(tx.totalBS) || (safeNum(tx.amountUSDT) * safeNum(tx.rate)));
     } else if (tx.type === 'expense') {
-      if (tx.currency === 'USDT' || tx.amountUSDT > 0) newInv.usdt += safeNum(tx.amountUSDT);
-      else newInv.ves += safeNum(tx.amountBS);
+      if (tx.sourceBucket && tx.sourceBucket !== 'p2p') {
+          // Revertir a la cubeta personal
+          let newBuckets = { ...buckets };
+          if (newBuckets[tx.sourceBucket] !== undefined) {
+              newBuckets[tx.sourceBucket] += safeNum(tx.expenseUSDT);
+              await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
+          }
+      } else {
+          // Revertir a la caja operativa P2P
+          if (tx.currency === 'USDT' || tx.amountUSDT > 0) newInv.usdt += safeNum(tx.amountUSDT);
+          else newInv.ves += safeNum(tx.amountBS);
+      }
     } else if (tx.type === 'capital') {
        if (tx.currency === 'VES') newInv.ves -= safeNum(tx.amount);
        else if (tx.currency === 'USDT') {
@@ -231,6 +261,7 @@ export default function App() {
             await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
         }
         setTransactions([]); setLoans([]); setSnapshots([]); setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
+        setBuckets({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
         setEditingInventory(false); setLoading(false);
         alert("Reset completo.");
     } catch (e) { console.error(e); setLoading(false); }
@@ -267,7 +298,7 @@ export default function App() {
                 <Activity size={32} className="text-white" />
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
-            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.10 Corporativa</span></div>
+            <div className="flex justify-center mb-6"><span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">V4.11 Dynamics</span></div>
             <div className="space-y-3">
                 <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
                     <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
@@ -341,7 +372,7 @@ export default function App() {
         {view === 'cierres' && <CierresModule transactions={transactions} snapshots={snapshots} inventory={inventory} onSaveSnapshot={handleSaveSnapshot} onTrade={handleTrade} onDeleteTx={handleDeleteTransaction} onDeleteSnap={handleDeleteSnapshot} isGuest={user.role === 'guest'} />}
         {view === 'graficas' && <GraficasModule transactions={transactions} snapshots={snapshots} inventory={inventory} goals={goals} onSaveGoals={handleUpdateGoals} isGuest={user.role === 'guest'} />}
         {view === 'deudas' && <LoansModule loans={loans} user={user} db={db} appId={appId} isGuest={user.role === 'guest'} onTrade={handleTrade} />}
-        {view === 'presupuestos' && <PresupuestosModule user={user} db={db} appId={appId} isGuest={user.role === 'guest'} onTrade={handleTrade} inventory={inventory} />}
+        {view === 'presupuestos' && <PresupuestosModule user={user} db={db} appId={appId} buckets={buckets} isGuest={user.role === 'guest'} onTrade={handleTrade} inventory={inventory} />}
         {view === 'simulator' && <SimulatorModule />}
       </div>
 
@@ -412,7 +443,6 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                ].sort((a, b) => {
                    const dateA = a.dateStr || a.date || "1970-01-01";
                    const dateB = b.dateStr || b.date || "1970-01-01";
-                   // FIX: Asegurar T12 para que no brinque al día anterior al ordenar
                    if (dateA !== dateB) return new Date(dateB + 'T12:00:00') - new Date(dateA + 'T12:00:00');
                    const timeA = a.createdAt?.seconds || 0;
                    const timeB = b.createdAt?.seconds || 0;
@@ -424,7 +454,6 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
 
                const formatDateHeader = (dateString) => {
                    if (!dateString) return 'Desconocido';
-                   // FIX: T12:00:00 asegura que la zona horaria no cambie el día
                    const d = new Date(dateString + 'T12:00:00'); 
                    const today = new Date();
                    const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
@@ -496,6 +525,11 @@ function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onT
                                                  item.type === 'swap' ? 'Swap' : 'Gasto'}
                                              </p>
                                              <p className="text-[10px] text-slate-500">
+                                                 {item.type === 'expense' && (
+                                                     <span className={`px-1 py-0.5 rounded text-[8px] mr-1 ${item.sourceBucket && item.sourceBucket !== 'p2p' ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-700 text-slate-300'}`}>
+                                                         {item.sourceBucket && item.sourceBucket !== 'p2p' ? `Fondo: ${item.sourceBucket.toUpperCase()}` : 'Caja P2P'}
+                                                     </span>
+                                                 )}
                                                  {item.type === 'expense' || item.type === 'withdraw' ? `${item.description || 'Sin nota'} ${item.currency === 'VES' && item.rate ? `(Tasa: ${item.rate})` : ''}` : 
                                                   item.type === 'loan_in' ? `Ganancia cambiaria: +$${safeNum(item.devaluationProfit).toFixed(2)}` :
                                                   `Tasa: ${safeNum(item.rate)}`}
@@ -562,7 +596,6 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
       const activeDays = isCurrentMonth ? now.getDate() : daysInMonth;
       const days = [];
       
-      // FIX: Agregado T12:00:00 para evitar que la zona horaria atrase el día
       const prePeriodSnaps = snapshots.filter(s => new Date(s.date + 'T12:00:00') < firstDay).sort((a,b) => new Date(b.date + 'T12:00:00') - new Date(a.date + 'T12:00:00'));
       const firstMonthSnaps = snapshots.filter(s => {
           const d = new Date(s.date + 'T12:00:00'); return d >= firstDay && d <= lastDay;
@@ -573,7 +606,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
       
       let currentEquity = startingCapital;
       let totalPeriodProfit = 0;
-      let totalPeriodExpenses = 0;
+      let totalPeriodExpenses = 0; // Total para la gráfica de pastel
       let totalDeposits = 0;
       let totalWithdrawals = 0;
       let totalLoansOut = 0;
@@ -600,8 +633,14 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
           }
 
           const dayExpenses = transactions.filter(t => t.type === 'expense' && t.dateStr === dateStr);
-          const sumExpenses = dayExpenses.reduce((acc, t) => acc + (t.expenseUSDT || safeNum(t.amountBS)/40), 0);
-          totalPeriodExpenses += sumExpenses;
+          
+          // Lógica crucial: Separar gastos para la matemática
+          const sumAllExpenses = dayExpenses.reduce((acc, t) => acc + (t.expenseUSDT || safeNum(t.amountBS)/40), 0);
+          totalPeriodExpenses += sumAllExpenses;
+
+          // Solo los gastos que afectaron P2P se suman a la ganancia diaria
+          const p2pExpenses = dayExpenses.filter(t => !t.sourceBucket || t.sourceBucket === 'p2p');
+          const sumP2pExpenses = p2pExpenses.reduce((acc, t) => acc + (t.expenseUSDT || safeNum(t.amountBS)/40), 0);
 
           const dayDeposits = transactions.filter(t => t.type === 'capital' && t.dateStr === dateStr);
           const sumDeposits = dayDeposits.reduce((acc, t) => acc + (t.currency === 'USDT' ? safeNum(t.amount) : safeNum(t.amount)/40), 0);
@@ -616,15 +655,16 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
 
           let dailyProfit = 0;
           if (daySnaps.length > 0) {
-             dailyProfit = (endOfDayEquity - currentEquity) + sumExpenses + dayLoansOut + dayWithdrawals - sumDeposits - dayLoansInPrincipal;
+             // Usamos sumP2pExpenses para no inflar la ganancia operativa con el mercado o alquiler
+             dailyProfit = (endOfDayEquity - currentEquity) + sumP2pExpenses + dayLoansOut + dayWithdrawals - sumDeposits - dayLoansInPrincipal;
              currentEquity = endOfDayEquity; 
           } else {
-             currentEquity = currentEquity - sumExpenses - dayLoansOut - dayWithdrawals + sumDeposits + dayLoansInPrincipal;
+             currentEquity = currentEquity - sumP2pExpenses - dayLoansOut - dayWithdrawals + sumDeposits + dayLoansInPrincipal;
              dailyProfit = 0; 
           }
 
           totalPeriodProfit += dailyProfit;
-          days.push({ label: d.getDate(), dateStr, profit: dailyProfit, expense: sumExpenses });
+          days.push({ label: d.getDate(), dateStr, profit: dailyProfit, expense: sumAllExpenses });
       }
 
       const netGrowth = totalPeriodProfit - totalPeriodExpenses; 
@@ -706,7 +746,7 @@ function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals
                   </div>
 
                   <div className="border-t border-slate-800 pt-3 flex justify-between items-center">
-                      <span className="text-xs font-bold text-white uppercase">Crecimiento Real (Neta)</span>
+                      <span className="text-xs font-bold text-white uppercase" title="Rendimiento P2P menos Todos tus Gastos">Crecimiento Real (Neta)</span>
                       <span className={`font-mono font-black text-lg ${monthData.netGrowth >= 0 ? 'text-blue-400' : 'text-red-500'}`}>
                           {monthData.netGrowth > 0 ? '+' : ''}{monthData.netGrowth.toFixed(2)}
                       </span>
@@ -1021,18 +1061,9 @@ function LoansModule({ loans, user, db, appId, isGuest, onTrade }) {
 }
 
 // --- MÓDULO 4: PRESUPUESTOS PERSONALES ---
-function PresupuestosModule({ user, db, appId, isGuest, onTrade, inventory }) {
-  const [buckets, setBuckets] = useState({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+function PresupuestosModule({ user, db, appId, buckets, isGuest, onTrade, inventory }) {
   const [distributeAmount, setDistributeAmount] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-
-  useEffect(() => {
-    if (isGuest) return;
-    const unsub = onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), (snap) => {
-        if(snap.exists()) setBuckets(snap.data());
-    });
-    return () => unsub();
-  }, [user, isGuest, db, appId]);
 
   const handleDistribute = async () => {
     if (isGuest) { alert("Modo Invitado: Distribución bloqueada."); return; }
@@ -1046,18 +1077,12 @@ function PresupuestosModule({ user, db, appId, isGuest, onTrade, inventory }) {
         const base = Math.min(amount, 1200);
         const surplus = Math.max(0, amount - 1200);
 
-        // Cascada Base ($1200)
-        dDiezmo += base * 0.20;
-        dSost += base * 0.30;
-        dProy += base * 0.20;
-        dPatr += base * 0.20;
-        dRes += base * 0.10;
+        // Cascada Base
+        dDiezmo += base * 0.20; dSost += base * 0.30; dProy += base * 0.20; dPatr += base * 0.20; dRes += base * 0.10;
 
         // Distribución de Excedentes
         if (surplus > 0) {
-            dDiezmo += surplus * 0.20;
-            dProy += surplus * 0.40;
-            dPatr += surplus * 0.40;
+            dDiezmo += surplus * 0.20; dProy += surplus * 0.40; dPatr += surplus * 0.40;
         }
 
         const newBuckets = {
@@ -1068,34 +1093,21 @@ function PresupuestosModule({ user, db, appId, isGuest, onTrade, inventory }) {
             reserva: safeNum(buckets.reserva) + dRes
         };
 
-        // 1. Guardar la nueva data de cubetas
         await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
         
-        // 2. Guardar en el historial de distribuciones
         await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'distributions'), {
-            amountDistributed: amount,
-            breakdown: { diezmo: dDiezmo, sostenimiento: dSost, proyectos: dProy, patrimonio: dPatr, reserva: dRes },
-            dateStr: getLocalDateString(),
-            createdAt: serverTimestamp()
+            amountDistributed: amount, breakdown: { diezmo: dDiezmo, sostenimiento: dSost, proyectos: dProy, patrimonio: dPatr, reserva: dRes },
+            dateStr: getLocalDateString(), createdAt: serverTimestamp()
         });
 
-        // 3. Auto-débito de la caja operativa P2P (Simula un retiro de capital que no afecta el gasto)
         await onTrade({
-            type: 'withdraw',
-            currency: 'USDT',
-            amountUSDT: amount,
-            amountBS: 0,
-            rate: inventory.avgPrice || 40,
-            description: 'Traspaso a Presupuesto Personal',
-            dateStr: getLocalDateString()
+            type: 'withdraw', currency: 'USDT', amountUSDT: amount, amountBS: 0,
+            rate: inventory.avgPrice || 40, description: 'Traspaso a Presupuesto Personal', dateStr: getLocalDateString()
         });
 
         setDistributeAmount('');
         alert("✅ Capital debitado de P2P y distribuido en tus cubetas exitosamente.");
-    } catch (error) {
-        console.error("Error al distribuir:", error);
-        alert("Error: " + error.message);
-    }
+    } catch (error) { console.error("Error al distribuir:", error); alert("Error: " + error.message); }
     setIsProcessing(false);
   };
 
@@ -1106,13 +1118,7 @@ function PresupuestosModule({ user, db, appId, isGuest, onTrade, inventory }) {
       <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl">
         <h3 className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-4 flex items-center gap-2"><Landmark size={14}/> Traspaso de Utilidades</h3>
         <div className="flex gap-2 items-center">
-            <input 
-                type="number" 
-                value={distributeAmount} 
-                onChange={e=>setDistributeAmount(e.target.value)} 
-                placeholder="Ej: 1200" 
-                className="w-full bg-slate-950 p-3 rounded-xl text-white border border-slate-700 outline-none font-mono focus:border-blue-500"
-            />
+            <input type="number" value={distributeAmount} onChange={e=>setDistributeAmount(e.target.value)} placeholder="Ej: 1200" className="w-full bg-slate-950 p-3 rounded-xl text-white border border-slate-700 outline-none font-mono focus:border-blue-500"/>
             <button onClick={handleDistribute} disabled={isProcessing} className="bg-blue-600 hover:bg-blue-500 p-3 rounded-xl text-white font-bold transition-all disabled:opacity-50">
                 {isProcessing ? <Loader2 size={20} className="animate-spin" /> : <PlusCircle size={20}/>}
             </button>
@@ -1121,28 +1127,23 @@ function PresupuestosModule({ user, db, appId, isGuest, onTrade, inventory }) {
       </div>
 
       <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider pl-1 mt-6">Mis Cubetas Personales</h3>
-      
       <div className="grid grid-cols-2 gap-3">
           <div className="bg-indigo-900/10 p-4 rounded-xl border border-indigo-500/20">
               <p className="text-[10px] text-indigo-400 uppercase font-bold mb-1 flex items-center gap-1"><Heart size={12}/> Diezmo y Ofrendas</p>
               <h2 className="text-xl font-bold text-white">${safeNum(buckets.diezmo).toFixed(2)}</h2>
           </div>
-          
           <div className="bg-orange-900/10 p-4 rounded-xl border border-orange-500/20">
               <p className="text-[10px] text-orange-400 uppercase font-bold mb-1 flex items-center gap-1"><ShieldCheck size={12}/> Sostenimiento Fijo</p>
               <h2 className="text-xl font-bold text-white">${safeNum(buckets.sostenimiento).toFixed(2)}</h2>
           </div>
-
           <div className="bg-emerald-900/10 p-4 rounded-xl border border-emerald-500/20">
               <p className="text-[10px] text-emerald-400 uppercase font-bold mb-1 flex items-center gap-1"><TrendingUp size={12}/> Patrimonio</p>
               <h2 className="text-xl font-bold text-white">${safeNum(buckets.patrimonio).toFixed(2)}</h2>
           </div>
-
           <div className="bg-fuchsia-900/10 p-4 rounded-xl border border-fuchsia-500/20">
               <p className="text-[10px] text-fuchsia-400 uppercase font-bold mb-1 flex items-center gap-1"><Plane size={12}/> Proyectos / Viajes</p>
               <h2 className="text-xl font-bold text-white">${safeNum(buckets.proyectos).toFixed(2)}</h2>
           </div>
-
           <div className="col-span-2 bg-red-900/10 p-4 rounded-xl border border-red-500/20">
               <p className="text-[10px] text-red-400 uppercase font-bold mb-1 flex items-center gap-1"><AlertTriangle size={12}/> Fondo de Reserva / Emergencia</p>
               <h2 className="text-xl font-bold text-white">${safeNum(buckets.reserva).toFixed(2)} <span className="text-xs text-slate-500 font-normal">/ Meta: $1000</span></h2>
@@ -1240,7 +1241,7 @@ function SimpleGapCalculator() {
   );
 }
 
-// Simulador Avanzado BTC-Triangulación (Perspectiva USDT a USDT)
+// Simulador Avanzado BTC-Triangulación
 function BtcTriangulationCalc() {
   const [capital, setCapital] = useState(1000);
   const [sellUsdt, setSellUsdt] = useState(972);
@@ -1249,65 +1250,29 @@ function BtcTriangulationCalc() {
   const [isLoading, setIsLoading] = useState(false);
   const [apiSource, setApiSource] = useState('Manual');
 
-  // Toggles de Comisiones
   const [feeSellBinance, setFeeSellBinance] = useState(true);
   const [feeBuyBinance, setFeeBuyBinance] = useState(true);
   const [feePM, setFeePM] = useState(true);
 
-  // FIX: Sistema de Búsqueda de Precio en Cascada + Manual
   const fetchSpotPrice = async () => {
-    setIsLoading(true);
-    setApiSource('Buscando...');
-    
+    setIsLoading(true); setApiSource('Buscando...');
     try {
-      // Intento 1: CoinGecko
       const resCG = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
       const dataCG = await resCG.json();
-      if (dataCG && dataCG.bitcoin && dataCG.bitcoin.usd) {
-        setSpotBtc(parseFloat(dataCG.bitcoin.usd));
-        setApiSource('CoinGecko');
-        setIsLoading(false);
-        return;
-      }
-    } catch (e) { console.warn("Fallo CoinGecko, intentando Binance..."); }
+      if (dataCG && dataCG.bitcoin && dataCG.bitcoin.usd) { setSpotBtc(parseFloat(dataCG.bitcoin.usd)); setApiSource('CoinGecko'); setIsLoading(false); return; }
+    } catch (e) { console.warn("Fallo CoinGecko"); }
 
     try {
-      // Intento 2: Binance Pública
       const resBin = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
       const dataBin = await resBin.json();
-      if (dataBin && dataBin.price) {
-        setSpotBtc(parseFloat(dataBin.price));
-        setApiSource('Binance');
-        setIsLoading(false);
-        return;
-      }
-    } catch (e) { console.warn("Fallo Binance, intentando KuCoin..."); }
+      if (dataBin && dataBin.price) { setSpotBtc(parseFloat(dataBin.price)); setApiSource('Binance'); setIsLoading(false); return; }
+    } catch (e) { console.warn("Fallo Binance"); }
     
-    try {
-      // Intento 3: KuCoin Pública
-      const resKu = await fetch('https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=BTC-USDT');
-      const dataKu = await resKu.json();
-      if (dataKu && dataKu.data && dataKu.data.price) {
-        setSpotBtc(parseFloat(dataKu.data.price));
-        setApiSource('KuCoin');
-        setIsLoading(false);
-        return;
-      }
-    } catch (e) { console.warn("Fallo KuCoin."); }
-
-    // Si todo falla
-    setApiSource('Fallo de red - Usa Manual');
-    setIsLoading(false);
+    setApiSource('Fallo de red - Usa Manual'); setIsLoading(false);
   };
 
-  useEffect(() => {
-    fetchSpotPrice();
-    // Bajamos la frecuencia a cada 30 seg para no saturar APIs
-    const interval = setInterval(fetchSpotPrice, 30000);
-    return () => clearInterval(interval);
-  }, []);
+  useEffect(() => { fetchSpotPrice(); const interval = setInterval(fetchSpotPrice, 30000); return () => clearInterval(interval); }, []);
 
-  // --- LÓGICA DE CÁLCULO TRADER ---
   const feeSellVal = feeSellBinance ? 0.002 : 0; 
   const feeBuyVal = feeBuyBinance ? 0.002 : 0;   
   const feePmVal = feePM ? 0.003 : 0;            
@@ -1334,143 +1299,39 @@ function BtcTriangulationCalc() {
 
   return (
     <div className="p-4 space-y-4 animate-in fade-in">
-       
        <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl">
-           <h3 className="text-xs text-orange-400 font-bold uppercase mb-4 flex items-center gap-2">
-             <ArrowRightLeft size={14}/> Arbitraje Triangular (USDT <ArrowRight size={10}/> Bs <ArrowRight size={10}/> BTC)
-           </h3>
-           
+           <h3 className="text-xs text-orange-400 font-bold uppercase mb-4 flex items-center gap-2"><ArrowRightLeft size={14}/> Arbitraje Triangular (USDT <ArrowRight size={10}/> Bs <ArrowRight size={10}/> BTC)</h3>
            <div className="space-y-4">
-               <div>
-                  <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Capital Inicial (USDT)</label>
-                  <input type="number" value={capital} onChange={e=>setCapital(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none focus:border-orange-500 text-lg"/>
-               </div>
-               
+               <div><label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Capital Inicial (USDT)</label><input type="number" value={capital} onChange={e=>setCapital(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none focus:border-orange-500 text-lg"/></div>
                <div className="grid grid-cols-2 gap-3">
-                   <div className="relative">
-                      <div className="absolute top-0 right-0 p-2 opacity-20"><TrendingDown size={32}/></div>
-                      <label className="text-[10px] text-red-400 font-bold uppercase block mb-1">1. Vendes USDT a:</label>
-                      <input type="number" step="0.01" value={sellUsdt} onChange={e=>setSellUsdt(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/>
-                   </div>
-                   <div className="relative">
-                      <div className="absolute top-0 right-0 p-2 opacity-20"><Bitcoin size={32}/></div>
-                      <label className="text-[10px] text-emerald-400 font-bold uppercase block mb-1">2. Compras BTC a:</label>
-                      <input type="number" value={buyBtc} onChange={e=>setBuyBtc(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/>
-                   </div>
+                   <div className="relative"><div className="absolute top-0 right-0 p-2 opacity-20"><TrendingDown size={32}/></div><label className="text-[10px] text-red-400 font-bold uppercase block mb-1">1. Vendes USDT a:</label><input type="number" step="0.01" value={sellUsdt} onChange={e=>setSellUsdt(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/></div>
+                   <div className="relative"><div className="absolute top-0 right-0 p-2 opacity-20"><Bitcoin size={32}/></div><label className="text-[10px] text-emerald-400 font-bold uppercase block mb-1">2. Compras BTC a:</label><input type="number" value={buyBtc} onChange={e=>setBuyBtc(parseFloat(e.target.value)||0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/></div>
                </div>
-
                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-3">
                   <p className="text-[10px] text-slate-500 font-bold uppercase border-b border-slate-800 pb-1">Gestión de Comisiones</p>
-                  
-                  <div className="flex justify-between items-center">
-                    <div>
-                        <p className="text-xs text-slate-300">Venta USDT (Binance)</p>
-                        <p className="text-[9px] text-slate-500">-0.2% en USDT</p>
-                    </div>
-                    <button onClick={()=>setFeeSellBinance(!feeSellBinance)} className={`p-1 transition-colors ${feeSellBinance ? 'text-orange-400' : 'text-slate-600'}`}>
-                        {feeSellBinance ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}
-                    </button>
-                  </div>
-                  
-                  <div className="flex justify-between items-center">
-                    <div>
-                        <p className="text-xs text-slate-300">Envío Pago Móvil</p>
-                        <p className="text-[9px] text-slate-500">-0.3% en Bs transferidos</p>
-                    </div>
-                    <button onClick={()=>setFeePM(!feePM)} className={`p-1 transition-colors ${feePM ? 'text-orange-400' : 'text-slate-600'}`}>
-                        {feePM ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}
-                    </button>
-                  </div>
-
-                  <div className="flex justify-between items-center">
-                    <div>
-                        <p className="text-xs text-slate-300">Compra BTC (Binance)</p>
-                        <p className="text-[9px] text-slate-500">-0.2% en BTC recibidos</p>
-                    </div>
-                    <button onClick={()=>setFeeBuyBinance(!feeBuyBinance)} className={`p-1 transition-colors ${feeBuyBinance ? 'text-orange-400' : 'text-slate-600'}`}>
-                        {feeBuyBinance ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}
-                    </button>
-                  </div>
+                  <div className="flex justify-between items-center"><div><p className="text-xs text-slate-300">Venta USDT (Binance)</p><p className="text-[9px] text-slate-500">-0.2% en USDT</p></div><button onClick={()=>setFeeSellBinance(!feeSellBinance)} className={`p-1 transition-colors ${feeSellBinance ? 'text-orange-400' : 'text-slate-600'}`}>{feeSellBinance ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}</button></div>
+                  <div className="flex justify-between items-center"><div><p className="text-xs text-slate-300">Envío Pago Móvil</p><p className="text-[9px] text-slate-500">-0.3% en Bs</p></div><button onClick={()=>setFeePM(!feePM)} className={`p-1 transition-colors ${feePM ? 'text-orange-400' : 'text-slate-600'}`}>{feePM ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}</button></div>
+                  <div className="flex justify-between items-center"><div><p className="text-xs text-slate-300">Compra BTC (Binance)</p><p className="text-[9px] text-slate-500">-0.2% en BTC</p></div><button onClick={()=>setFeeBuyBinance(!feeBuyBinance)} className={`p-1 transition-colors ${feeBuyBinance ? 'text-orange-400' : 'text-slate-600'}`}>{feeBuyBinance ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}</button></div>
                </div>
-               
-               {/* FIX: CAMPO EDITABLE MANUAL DE BTC + CASCADA DE APIs */}
                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 relative">
-                  <label className="text-[10px] text-slate-500 font-bold uppercase block mb-2 flex justify-between items-center">
-                    <span>3. Mercado Spot BTC/USDT</span>
-                    <div className="flex gap-2">
-                        <span className="text-[9px] text-slate-500 bg-slate-900 px-2 py-1 rounded">Fuente: {apiSource}</span>
-                        <button onClick={fetchSpotPrice} disabled={isLoading} className="text-orange-400 hover:text-white transition-colors bg-orange-500/10 p-1 rounded">
-                          {isLoading ? <Loader2 size={12} className="animate-spin"/> : <RefreshCcw size={12}/>}
-                        </button>
-                    </div>
-                  </label>
-                  <div className="flex justify-between items-center bg-slate-900 border border-slate-700 rounded-xl overflow-hidden focus-within:border-orange-500 transition-colors">
-                     <span className="pl-3 text-slate-400 font-bold">$</span>
-                     <input 
-                        type="number" 
-                        step="0.01" 
-                        value={spotBtc} 
-                        onChange={e => { setSpotBtc(parseFloat(e.target.value) || 0); setApiSource('Manual'); }} 
-                        className="w-full bg-transparent p-3 text-white font-mono text-2xl outline-none"
-                     />
-                  </div>
+                  <label className="text-[10px] text-slate-500 font-bold uppercase block mb-2 flex justify-between items-center"><span>3. Mercado Spot BTC/USDT</span><div className="flex gap-2"><span className="text-[9px] text-slate-500 bg-slate-900 px-2 py-1 rounded">Fuente: {apiSource}</span><button onClick={fetchSpotPrice} disabled={isLoading} className="text-orange-400 hover:text-white transition-colors bg-orange-500/10 p-1 rounded">{isLoading ? <Loader2 size={12} className="animate-spin"/> : <RefreshCcw size={12}/>}</button></div></label>
+                  <div className="flex justify-between items-center bg-slate-900 border border-slate-700 rounded-xl overflow-hidden focus-within:border-orange-500 transition-colors"><span className="pl-3 text-slate-400 font-bold">$</span><input type="number" step="0.01" value={spotBtc} onChange={e => { setSpotBtc(parseFloat(e.target.value) || 0); setApiSource('Manual'); }} className="w-full bg-transparent p-3 text-white font-mono text-2xl outline-none"/></div>
                </div>
            </div>
        </div>
 
        <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl relative overflow-hidden">
            <div className="absolute top-0 right-0 p-4 opacity-5"><Receipt size={80}/></div>
-           
-           <h3 className="text-xs text-slate-400 font-bold uppercase mb-4 flex items-center gap-2 border-b border-slate-800 pb-2">
-               Ficha Técnica de Operación
-           </h3>
-
+           <h3 className="text-xs text-slate-400 font-bold uppercase mb-4 flex items-center gap-2 border-b border-slate-800 pb-2">Ficha Técnica de Operación</h3>
            <div className="space-y-3 relative z-10 text-sm">
-               <div className="flex justify-between items-center">
-                   <span className="text-slate-400">Capital Inicial</span>
-                   <span className="font-mono text-white">{capital.toFixed(2)} USDT</span>
-               </div>
-               <div className="flex justify-between items-center">
-                   <span className="text-slate-400">Bs Obtenidos en Banco</span>
-                   <span className="font-mono text-slate-300">Bs {netBsReceived.toLocaleString('es-ES', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>
-               </div>
-               <div className="flex justify-between items-center">
-                   <span className="text-slate-400">BTC Comprados (Netos)</span>
-                   <span className="font-mono text-orange-400">{netBtcBought.toFixed(8)} BTC</span>
-               </div>
-               <div className="flex justify-between items-center border-t border-slate-800 pt-3">
-                   <span className="text-slate-300 font-bold">USDT Finales (Equivalentes)</span>
-                   <span className="font-mono font-bold text-lg text-white">{netFinalUsdt.toFixed(2)} USDT</span>
-               </div>
-               
-               <div className="bg-blue-900/20 p-3 rounded-lg border border-blue-500/30 mt-4 mb-4">
-                   <p className="text-[10px] text-blue-400 uppercase font-bold mb-1">Tasa Real de Recompra USDT</p>
-                   <div className="flex justify-between items-end">
-                       <span className="font-mono text-xl text-blue-100">{netImpliedBuyRate.toFixed(2)} Bs</span>
-                       <span className="text-xs text-blue-400">(Vendiste a {sellUsdt})</span>
-                   </div>
-               </div>
+               <div className="flex justify-between items-center"><span className="text-slate-400">Capital Inicial</span><span className="font-mono text-white">{capital.toFixed(2)} USDT</span></div>
+               <div className="flex justify-between items-center"><span className="text-slate-400">Bs Obtenidos</span><span className="font-mono text-slate-300">Bs {netBsReceived.toLocaleString('es-ES', {minimumFractionDigits:2, maximumFractionDigits:2})}</span></div>
+               <div className="flex justify-between items-center"><span className="text-slate-400">BTC Comprados</span><span className="font-mono text-orange-400">{netBtcBought.toFixed(8)} BTC</span></div>
+               <div className="flex justify-between items-center border-t border-slate-800 pt-3"><span className="text-slate-300 font-bold">USDT Finales</span><span className="font-mono font-bold text-lg text-white">{netFinalUsdt.toFixed(2)} USDT</span></div>
+               <div className="bg-blue-900/20 p-3 rounded-lg border border-blue-500/30 mt-4 mb-4"><p className="text-[10px] text-blue-400 uppercase font-bold mb-1">Tasa Real de Recompra USDT</p><div className="flex justify-between items-end"><span className="font-mono text-xl text-blue-100">{netImpliedBuyRate.toFixed(2)} Bs</span><span className="text-xs text-blue-400">(Vendiste a {sellUsdt})</span></div></div>
            </div>
-
-           <div className="grid grid-cols-2 gap-4 mt-6 border-t border-slate-800 pt-4">
-              <div>
-                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha Bruta (0% Com)</p>
-                 <p className="text-lg font-mono text-slate-400">{grossSpread > 0 ? '+' : ''}{grossSpread.toFixed(2)}%</p>
-              </div>
-              <div className="text-right">
-                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha NETA</p>
-                 <h2 className={`text-2xl font-black ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>
-                   {isProfitable ? '+' : ''}{netSpread.toFixed(2)}%
-                 </h2>
-              </div>
-           </div>
-
-           <div className="mt-4 pt-4 border-t border-slate-800 text-center">
-                 <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Ganancia Neta Calculada</p>
-                 <p className={`font-mono font-bold text-2xl ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>
-                   {isProfitable ? '+' : ''}${netProfit.toFixed(2)}
-                 </p>
-           </div>
+           <div className="grid grid-cols-2 gap-4 mt-6 border-t border-slate-800 pt-4"><div><p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha Bruta (0% Com)</p><p className="text-lg font-mono text-slate-400">{grossSpread > 0 ? '+' : ''}{grossSpread.toFixed(2)}%</p></div><div className="text-right"><p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha NETA</p><h2 className={`text-2xl font-black ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>{isProfitable ? '+' : ''}{netSpread.toFixed(2)}%</h2></div></div>
+           <div className="mt-4 pt-4 border-t border-slate-800 text-center"><p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Ganancia Neta Calculada</p><p className={`font-mono font-bold text-2xl ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>{isProfitable ? '+' : ''}${netProfit.toFixed(2)}</p></div>
        </div>
     </div>
   );
@@ -1483,6 +1344,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
   const [expenseCategory, setExpenseCategory] = useState('Comida'); 
   const [expenseNote, setExpenseNote] = useState(''); 
   const [expenseCurrency, setExpenseCurrency] = useState('VES');
+  const [sourceBucket, setSourceBucket] = useState('sostenimiento'); // FIX: Selector de origen
   
   const [tradeDate, setTradeDate] = useState(getLocalDateString()); 
 
@@ -1493,7 +1355,7 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
   
   const handleSubmit = () => {
     if (mode === 'expense') { 
-        return onTrade({ type: 'expense', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput/valRate : 0), rate: valRate, category: expenseCategory, description: expenseNote, dateStr: tradeDate }); 
+        return onTrade({ type: 'expense', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput/valRate : 0), rate: valRate, category: expenseCategory, description: expenseNote, dateStr: tradeDate, sourceBucket: sourceBucket }); 
     }
     if (mode === 'withdraw') { 
         return onTrade({ type: 'withdraw', currency: expenseCurrency, amountBS: expenseCurrency === 'VES' ? valInput : 0, amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput/valRate : 0), rate: valRate, description: expenseNote, dateStr: tradeDate }); 
@@ -1544,9 +1406,22 @@ function TradeForm({ onTrade, onCancel, forcedMode, isGuest }) {
                 <div className="flex-1"><label className="text-[10px] text-slate-400 uppercase font-bold">{expenseCurrency === 'VES' ? 'Monto (Bs)' : 'Monto (USDT)'}</label><input type="number" step="0.01" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/></div>
                 {expenseCurrency === 'VES' && (<div className="flex-1"><label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Manual (Opcional)</label><input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} placeholder="Ej: 40.5" className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/></div>)}
             </div>
-            
+
+            {/* FIX: Selector de origen de fondos integrado */}
             {mode === 'expense' && (
+                <>
+                <div className="bg-slate-950 p-3 rounded-lg border border-slate-700">
+                    <label className="text-[10px] text-slate-400 uppercase font-bold mb-2 block">Fondo de Origen (¿De dónde sale?)</label>
+                    <select value={sourceBucket} onChange={e=>setSourceBucket(e.target.value)} className="w-full bg-slate-900 p-2 rounded text-white text-xs border border-slate-600 outline-none">
+                        <option value="sostenimiento">🛡️ Sostenimiento Fijo (Mercado/Alquiler/Salidas)</option>
+                        <option value="proyectos">✈️ Proyectos / Viajes / Compras grandes</option>
+                        <option value="diezmo">❤️ Diezmo y Ofrendas</option>
+                        <option value="reserva">⚠️ Fondo de Reserva (Emergencias)</option>
+                        <option value="p2p">💼 Caja Operativa P2P (Afecta Ganancia P2P)</option>
+                    </select>
+                </div>
                 <div className="grid grid-cols-3 gap-2">{categories.map(cat => (<button key={cat.id} onClick={() => setExpenseCategory(cat.id)} className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs font-bold transition-all ${expenseCategory === cat.id ? `${cat.bg} ${cat.border} text-white shadow-md` : `bg-slate-950 border-slate-700 text-slate-500`}`}>{cat.icon} {cat.id}</button>))}</div>
+                </>
             )}
             
             {mode === 'withdraw' && (
