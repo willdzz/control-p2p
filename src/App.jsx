@@ -1,11 +1,1546 @@
-// ... existing code ...
-// Constante de Versión para visualización
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, deleteDoc, doc, setDoc, getDocs, updateDoc 
+} from 'firebase/firestore';
+import { 
+  Wallet, TrendingUp, TrendingDown, History, Users, LogOut, Calculator, Landmark, PiggyBank, 
+  ArrowUpRight, ArrowDownLeft, PlusCircle, Trash2, RefreshCw, Edit2, Calendar, PieChart, 
+  Utensils, Zap, Shirt, Heart, Car, HelpCircle, Save, X, AlertTriangle, Info, 
+  Activity, User, RefreshCcw, Settings, BarChart3, ArrowRight, Lock, ToggleLeft, ToggleRight, 
+  Target, Pencil, Scale, MessageCircle, Loader2, CheckCircle2, ChevronDown, ChevronUp, DollarSign,
+  Store, ShoppingBag, Gamepad2, ChevronLeft, ChevronRight, CornerRightUp, CornerLeftDown, CalendarDays,
+  Stethoscope, Gift, Plane, Bitcoin, ArrowRightLeft, Receipt, ShieldCheck
+} from 'lucide-react';
+
+// --- CONFIGURACIÓN DE FIREBASE ---
+const firebaseConfig = {
+  apiKey: "AIzaSyCaa72nfDTjHn-VDRe2-IqjnlbXAqJkEu4",
+  authDomain: "miwallet-p2p.firebaseapp.com",
+  projectId: "miwallet-p2p",
+  storageBucket: "miwallet-p2p.firebasestorage.app",
+  messagingSenderId: "1028160097126",
+  appId: "1:1028160097126:web:170715208170f367e616a7"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
+
+// --- CONSTANTE DE VERSIÓN ---
 const APP_VERSION = "V4.17 Dynamics";
 
+// --- UTILIDADES DE SEGURIDAD Y FECHAS ---
+const safeNum = (val) => {
+  const num = parseFloat(val);
+  return isNaN(num) ? 0 : num;
+};
+
+const getLocalDateString = (dateObj) => {
+  const d = dateObj || new Date();
+  const offset = d.getTimezoneOffset() * 60000;
+  return new Date(d.getTime() - offset).toISOString().split('T')[0];
+};
+
+const BUCKET_LABELS = {
+  diezmo: 'Diezmo y Ofrendas',
+  sostenimiento: 'Sostenimiento Fijo',
+  proyectos: 'Proyectos / Viajes',
+  patrimonio: 'Patrimonio / Inversiones',
+  reserva: 'Fondo de Reserva'
+};
+
 // --- COMPONENTE PRINCIPAL ---
-// ... existing code ...
-// --- MÓDULO 4: PRESUPUESTOS PERSONALES ---
-function PresupuestosModule({ user, db, appId, buckets, budgetDetails, transactions, isGuest, onTrade, onDeleteTx, inventory }) {
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [view, setView] = useState('cierres'); 
+  const [transactions, setTransactions] = useState([]);
+  const [snapshots, setSnapshots] = useState([]); 
+  const [inventory, setInventory] = useState({ usdt: 0, ves: 0, avgPrice: 0 });
+  const [goals, setGoals] = useState({ daily: 30, monthly: 600 });
+  const [loans, setLoans] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  // ESTADO GLOBAL DE PRESUPUESTOS (Cubetas y Detalles)
+  const [buckets, setBuckets] = useState({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+  const [budgetDetails, setBudgetDetails] = useState({ proyectos: [], patrimonio: [] });
+
+  const [editingInventory, setEditingInventory] = useState(false);
+  const [tempInv, setTempInv] = useState({ usdt: '', ves: '', avgPrice: '' });
+
+  // SISTEMA DE NOTIFICACIONES Y CONFIRMACIÓN INTEGRADO (SIN ALERT/CONFIRM NATIVO)
+  const [toast, setToast] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+
+  const notify = useCallback((message, type = 'info') => {
+    setToast({ id: Date.now(), message, type });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const requestConfirm = useCallback((message, options = {}) => {
+    return new Promise((resolve) => {
+      setConfirmDialog({
+        title: options.title || 'Confirmar acción',
+        message,
+        confirmText: options.confirmText || 'Confirmar',
+        danger: Boolean(options.danger),
+        resolve
+      });
+    });
+  }, []);
+
+  const closeConfirm = (result) => {
+    if (confirmDialog?.resolve) confirmDialog.resolve(result);
+    setConfirmDialog(null);
+  };
+
+  const appId = 'p2p-v2-production';
+
+  // --- ESCUCHA DE AUTENTICACIÓN ---
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      if (u) setUser({ ...u, role: 'owner' });
+      else setUser(prev => (prev?.role === 'guest' ? prev : null)); 
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- ESCUCHA DE COLECCIONES EN FIRESTORE ---
+  useEffect(() => {
+    if (!user) return;
+    if (user.role === 'guest') { setLoading(false); return; }
+
+    const safetyTimeout = setTimeout(() => setLoading(false), 5000);
+
+    const qTx = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'));
+    const unsubTx = onSnapshot(qTx, (snap) => setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+
+    const qSnap = query(collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots'));
+    const unsubSnap = onSnapshot(qSnap, (snap) => setSnapshots(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory');
+    const unsubInv = onSnapshot(docRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setInventory({ usdt: safeNum(data.usdt), ves: safeNum(data.ves), avgPrice: safeNum(data.avgPrice) });
+      } else {
+        setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
+      }
+    });
+
+    const goalsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'goals');
+    const unsubGoals = onSnapshot(goalsRef, (snap) => { if (snap.exists()) setGoals(snap.data()); });
+
+    const qLoans = query(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), orderBy('createdAt', 'desc'));
+    const unsubLoans = onSnapshot(qLoans, (snap) => setLoans(snap.docs.map(d => ({ id: d.id, ...d.data() }))));
+
+    const unsubBuckets = onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), (snap) => {
+      if (snap.exists()) {
+        const b = snap.data();
+        setBuckets({
+          diezmo: safeNum(b.diezmo),
+          sostenimiento: safeNum(b.sostenimiento),
+          proyectos: safeNum(b.proyectos),
+          patrimonio: safeNum(b.patrimonio),
+          reserva: safeNum(b.reserva)
+        });
+      } else {
+        setBuckets({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+      }
+    });
+
+    const unsubDetails = onSnapshot(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'details'), (snap) => {
+      if (snap.exists()) setBudgetDetails(snap.data());
+      else setBudgetDetails({ proyectos: [], patrimonio: [] });
+    });
+
+    setLoading(false);
+    clearTimeout(safetyTimeout);
+
+    return () => {
+      unsubTx();
+      unsubSnap();
+      unsubInv();
+      unsubGoals();
+      unsubLoans();
+      unsubBuckets();
+      unsubDetails();
+      clearTimeout(safetyTimeout);
+    };
+  }, [user]);
+
+  // --- OPERACIÓN CENTRAL DE TRANSACCIONES (BLINDADA V4.16 / V4.17) ---
+  const handleTrade = async (rawData) => {
+    if (user.role === 'guest') {
+      notify("Modo Invitado: No se pueden guardar operaciones.", "error");
+      return false;
+    }
+
+    const data = { ...rawData };
+    let newInv = {
+      usdt: safeNum(inventory.usdt),
+      ves: safeNum(inventory.ves),
+      avgPrice: safeNum(inventory.avgPrice)
+    };
+    let shouldUpdateInventory = true;
+    let updatedBucketsPayload = null;
+
+    try {
+      if (data.type === 'buy') {
+        const totalCostOld = newInv.usdt * newInv.avgPrice;
+        const costNew = safeNum(data.totalBS); 
+        const totalUSDT = newInv.usdt + safeNum(data.amountUSDT); 
+        newInv.avgPrice = totalUSDT > 0 ? (totalCostOld + costNew) / totalUSDT : 0;
+        newInv.usdt = totalUSDT;
+        newInv.ves -= costNew;
+      } else if (data.type === 'sell') {
+        const revenueVES = safeNum(data.totalBS); 
+        const costOfSold = safeNum(data.amountUSDT) * newInv.avgPrice;
+        data.profitUSDT = safeNum(data.rate) > 0 ? (revenueVES - costOfSold) / safeNum(data.rate) : 0;
+        newInv.usdt -= (safeNum(data.amountUSDT) + safeNum(data.feeUSDT));
+        newInv.ves += revenueVES;
+      } else if (data.type === 'expense') {
+        const currentRate = safeNum(data.rate) > 0 ? safeNum(data.rate) : newInv.avgPrice;
+        const expUSDT = data.currency === 'USDT'
+          ? safeNum(data.amountUSDT)
+          : (currentRate > 0 ? safeNum(data.amountBS) / currentRate : 0);
+        data.expenseUSDT = expUSDT;
+
+        if (data.sourceBucket && data.sourceBucket !== 'p2p') {
+          const currentBucketBalance = safeNum(buckets[data.sourceBucket]);
+          if (currentBucketBalance < expUSDT) {
+            const label = BUCKET_LABELS[data.sourceBucket] || data.sourceBucket;
+            const ok = await requestConfirm(
+              `La cubeta "${label}" tiene $${currentBucketBalance.toFixed(2)} y el gasto es de $${expUSDT.toFixed(2)}. Quedará con saldo negativo (-$${(expUSDT - currentBucketBalance).toFixed(2)}). ¿Registrar de todas formas?`,
+              { title: 'Saldo insuficiente en cubeta', confirmText: 'Registrar igual', danger: true }
+            );
+            if (!ok) return false;
+          }
+          updatedBucketsPayload = {
+            ...buckets,
+            [data.sourceBucket]: currentBucketBalance - expUSDT
+          };
+          // Un gasto pagado con cubeta personal no altera el inventario operativo P2P
+          shouldUpdateInventory = false;
+        } else {
+          if (data.currency === 'USDT') newInv.usdt -= safeNum(data.amountUSDT);
+          else newInv.ves -= safeNum(data.amountBS);
+        }
+      } else if (data.type === 'capital') {
+        if (data.currency === 'VES') {
+          newInv.ves += safeNum(data.amount);
+        } else if (data.currency === 'USDT') {
+          const totalCostOld = newInv.usdt * newInv.avgPrice;
+          const costNew = safeNum(data.amount) * safeNum(data.rate); 
+          const totalUSDT = newInv.usdt + safeNum(data.amount);
+          newInv.avgPrice = totalUSDT > 0 ? (totalCostOld + costNew) / totalUSDT : 0;
+          newInv.usdt = totalUSDT;
+        }
+      } else if (data.type === 'withdraw') {
+        if (data.currency === 'USDT') newInv.usdt -= safeNum(data.amountUSDT);
+        else newInv.ves -= safeNum(data.amountBS);
+      } else if (data.type === 'loan_out') {
+        if (data.currency === 'USDT') newInv.usdt -= safeNum(data.amountUSDT);
+        else newInv.ves -= safeNum(data.amountVES);
+      } else if (data.type === 'loan_in') {
+        if (safeNum(data.amountVES) > 0) {
+          newInv.ves += safeNum(data.amountVES);
+        } else if (safeNum(data.amountUSDT) > 0) {
+          newInv.usdt += safeNum(data.amountUSDT);
+        }
+      }
+      
+      data.avgPriceAtMoment = newInv.avgPrice;
+      data.dateStr = data.dateStr || getLocalDateString();
+      data.clientTimestamp = Date.now();
+
+      // ORDEN ATÓMICO: Primero guardamos el registro en el historial
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), {
+        ...data,
+        createdAt: serverTimestamp()
+      });
+
+      // Solo si el historial se guardó correctamente actualizamos cubetas o inventario P2P
+      if (updatedBucketsPayload) {
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), updatedBucketsPayload);
+      }
+      if (shouldUpdateInventory) {
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
+      }
+
+      notify("Movimiento registrado correctamente.", "success");
+      return true;
+    } catch (error) {
+      console.error("Error al guardar operación:", error);
+      notify("Error al guardar en Firebase: " + error.message, "error");
+      return false;
+    }
+  };
+
+  const handleSaveSnapshot = async (snapData) => {
+    if (user.role === 'guest') return;
+    try {
+      const newInv = {
+        usdt: safeNum(snapData.totalUsdt),
+        ves: safeNum(snapData.totalVes),
+        avgPrice: safeNum(snapData.avgPrice)
+      };
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'snapshots'), {
+        ...snapData,
+        clientTimestamp: Date.now(),
+        createdAt: serverTimestamp()
+      });
+      notify("Cierre operativo registrado exitosamente.", "success");
+    } catch (error) {
+      console.error("Error al guardar cierre:", error);
+      notify("Error al guardar cierre en Firebase: " + error.message, "error");
+    }
+  };
+
+  const handleDeleteTransaction = async (tx) => {
+    if (user.role === 'guest') return;
+    const ok = await requestConfirm("¿Borrar esta transacción y revertir los saldos correspondientes?", {
+      title: 'Eliminar transacción',
+      confirmText: 'Borrar y revertir',
+      danger: true
+    });
+    if (!ok) return;
+
+    let newInv = {
+      usdt: safeNum(inventory.usdt),
+      ves: safeNum(inventory.ves),
+      avgPrice: safeNum(inventory.avgPrice)
+    };
+    let shouldUpdateInventory = true;
+    let updatedBucketsPayload = null;
+
+    try {
+      if (tx.type === 'buy') {
+        const totalCost = safeNum(tx.totalBS) || (safeNum(tx.amountUSDT) * safeNum(tx.rate));
+        const currentTotalVal = newInv.usdt * newInv.avgPrice;
+        const prevUSDT = newInv.usdt - safeNum(tx.amountUSDT);
+        newInv.usdt = prevUSDT;
+        newInv.ves += totalCost;
+        newInv.avgPrice = prevUSDT > 0 ? (currentTotalVal - totalCost) / prevUSDT : 0;
+      } else if (tx.type === 'sell') {
+        newInv.usdt += (safeNum(tx.amountUSDT) + safeNum(tx.feeUSDT));
+        newInv.ves -= (safeNum(tx.totalBS) || (safeNum(tx.amountUSDT) * safeNum(tx.rate)));
+      } else if (tx.type === 'expense') {
+        if (tx.sourceBucket && tx.sourceBucket !== 'p2p') {
+          if (buckets[tx.sourceBucket] !== undefined) {
+            updatedBucketsPayload = {
+              ...buckets,
+              [tx.sourceBucket]: safeNum(buckets[tx.sourceBucket]) + safeNum(tx.expenseUSDT)
+            };
+          }
+          shouldUpdateInventory = false;
+        } else {
+          if (tx.currency === 'USDT' || (safeNum(tx.amountUSDT) > 0 && safeNum(tx.amountBS) === 0)) {
+            newInv.usdt += safeNum(tx.amountUSDT);
+          } else {
+            newInv.ves += safeNum(tx.amountBS);
+          }
+        }
+      } else if (tx.type === 'capital') {
+        if (tx.currency === 'VES') {
+          newInv.ves -= safeNum(tx.amount);
+        } else if (tx.currency === 'USDT') {
+          const costWas = safeNum(tx.amount) * safeNum(tx.rate);
+          const currentTotalVal = newInv.usdt * newInv.avgPrice;
+          const prevUSDT = newInv.usdt - safeNum(tx.amount);
+          newInv.usdt = prevUSDT;
+          newInv.avgPrice = prevUSDT > 0 ? (currentTotalVal - costWas) / prevUSDT : 0;
+        }
+      } else if (tx.type === 'withdraw') {
+        if (tx.currency === 'USDT' || (safeNum(tx.amountUSDT) > 0 && safeNum(tx.amountBS) === 0)) {
+          newInv.usdt += safeNum(tx.amountUSDT);
+        } else {
+          newInv.ves += safeNum(tx.amountBS);
+        }
+      } else if (tx.type === 'loan_out') {
+        if (tx.currency === 'USDT') newInv.usdt += safeNum(tx.amountUSDT);
+        else newInv.ves += safeNum(tx.amountVES);
+      } else if (tx.type === 'loan_in') {
+        if (safeNum(tx.amountVES) > 0) newInv.ves -= safeNum(tx.amountVES);
+        else if (safeNum(tx.amountUSDT) > 0) newInv.usdt -= safeNum(tx.amountUSDT);
+      }
+      
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', tx.id));
+      if (updatedBucketsPayload) {
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), updatedBucketsPayload);
+      }
+      if (shouldUpdateInventory) {
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
+      }
+      notify("Transacción eliminada y saldos revertidos.", "success");
+    } catch (error) {
+      console.error("Error al revertir transacción:", error);
+      notify("Error al borrar transacción: " + error.message, "error");
+    }
+  };
+
+  const handleDeleteSnapshot = async (snap) => {
+    if (user.role === 'guest') return;
+    const ok = await requestConfirm(`¿Estás seguro de borrar el cierre operativo del día ${snap.date}?`, {
+      title: 'Eliminar cierre',
+      confirmText: 'Borrar cierre',
+      danger: true
+    });
+    if (!ok) return;
+
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'snapshots', snap.id));
+      notify("Cierre operativo eliminado.", "success");
+    } catch (error) {
+      console.error("Error al borrar cierre:", error);
+      notify("Error al borrar cierre: " + error.message, "error");
+    }
+  };
+
+  const handleUpdateGoals = async (newGoals) => {
+    if (user.role === 'guest') { setGoals(newGoals); return; }
+    try {
+      setGoals(newGoals);
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'goals'), newGoals);
+      notify("Metas financieras actualizadas.", "success");
+    } catch (error) {
+      console.error("Error al guardar metas:", error);
+      notify("Error al guardar metas: " + error.message, "error");
+    }
+  };
+
+  const handleResetApp = async () => {
+    if (user.role === 'guest') return;
+    const ok = await requestConfirm("PELIGRO: ¿Borrar TODA la base de datos (transacciones, préstamos, cierres y cubetas) y reiniciar en CERO?", {
+      title: 'Restablecer aplicación a cero',
+      confirmText: 'Sí, borrar todo',
+      danger: true
+    });
+    if (!ok) return;
+
+    setLoading(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), { usdt: 0, ves: 0, avgPrice: 0 });
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), { diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'details'), { proyectos: [], patrimonio: [] });
+      const cols = ['transactions', 'loans', 'snapshots', 'distributions'];
+      for (const c of cols) {
+        const snap = await getDocs(collection(db, 'artifacts', appId, 'users', user.uid, c));
+        await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+      }
+      setTransactions([]);
+      setLoans([]);
+      setSnapshots([]);
+      setInventory({ usdt: 0, ves: 0, avgPrice: 0 });
+      setBuckets({ diezmo: 0, sostenimiento: 0, proyectos: 0, patrimonio: 0, reserva: 0 });
+      setBudgetDetails({ proyectos: [], patrimonio: [] });
+      setEditingInventory(false);
+      notify("Sistema restablecido en cero.", "success");
+    } catch (e) {
+      console.error(e);
+      notify("Error durante el reset: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveInventoryManual = async () => {
+    if (user.role === 'guest') return;
+    try {
+      const newInv = {
+        usdt: safeNum(tempInv.usdt),
+        ves: safeNum(tempInv.ves),
+        avgPrice: safeNum(tempInv.avgPrice)
+      };
+      setInventory(newInv);
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'inventory'), newInv);
+      setEditingInventory(false);
+      notify("Inventario actualizado manualmente.", "success");
+    } catch (error) {
+      console.error(error);
+      notify("Error al guardar inventario: " + error.message, "error");
+    }
+  };
+
+  const handleGuestLogin = () => {
+    setLoading(true);
+    setTimeout(() => {
+      setUser({ uid: 'guest', role: 'guest', displayName: 'Invitado' });
+      setView('simulator');
+      setLoading(false);
+    }, 600);
+  };
+
+  const handleLogout = () => {
+    if (user.role === 'guest') setUser(null);
+    else signOut(auth);
+    setView('cierres');
+  };
+
+  // CÁLCULO DE LA TRINIDAD CONTABLE + PRESUPUESTOS PERSONALES
+  const deferredCapital = useMemo(() => loans.reduce((acc, l) => acc + safeNum(l.amountUsd), 0), [loans]);
+  const operativeEquity = (safeNum(inventory.usdt) + (safeNum(inventory.ves) / (safeNum(inventory.avgPrice) || 1)));
+  const totalBuckets = safeNum(buckets.diezmo) + safeNum(buckets.sostenimiento) + safeNum(buckets.proyectos) + safeNum(buckets.patrimonio) + safeNum(buckets.reserva);
+  const globalEquity = operativeEquity + deferredCapital + totalBuckets;
+
+  // --- PANTALLA DE LOGIN ---
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-center relative overflow-hidden">
+        <div className="absolute top-[-10%] right-[-10%] w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl"></div>
+        <div className="absolute bottom-[-10%] left-[-10%] w-64 h-64 bg-blue-500/10 rounded-full blur-3xl"></div>
+        <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 p-8 rounded-3xl shadow-2xl relative z-10 w-full max-w-sm">
+          <div className="w-16 h-16 bg-gradient-to-br from-emerald-500 to-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-emerald-500/20">
+            <Activity size={32} className="text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-white mb-1">Control P2P</h1>
+          <div className="flex justify-center mb-6">
+            <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2.5 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">
+              {APP_VERSION}
+            </span>
+          </div>
+          <div className="space-y-3">
+            <button onClick={() => signInWithPopup(auth, provider)} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:-translate-y-0.5">
+              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="G" /> Iniciar con Google
+            </button>
+            <div className="relative py-2">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-700"></div></div>
+              <div className="relative flex justify-center text-xs"><span className="px-2 bg-slate-900/50 text-slate-500">o prueba el simulador</span></div>
+            </div>
+            <button onClick={handleGuestLogin} className="w-full bg-slate-800 text-slate-300 py-3 rounded-xl font-semibold flex items-center justify-center gap-2 hover:bg-slate-700 hover:text-white transition-all border border-slate-700">
+              <User size={18} /> Entrar como Invitado
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) return <div className="h-screen bg-slate-950 flex items-center justify-center text-emerald-500 animate-pulse">Cargando Sistema...</div>;
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-24 max-w-md mx-auto relative">
+      {/* NOTIFICACIÓN TOAST FLOTANTE */}
+      {toast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] w-[92%] max-w-sm animate-in fade-in slide-in-from-top-3">
+          <div className={`px-4 py-3 rounded-xl border shadow-2xl backdrop-blur-md flex items-center justify-between gap-3 text-xs font-semibold ${
+            toast.type === 'error'
+              ? 'bg-red-950/90 border-red-500/40 text-red-200'
+              : toast.type === 'success'
+                ? 'bg-emerald-950/90 border-emerald-500/40 text-emerald-200'
+                : 'bg-slate-900/95 border-blue-500/40 text-blue-200'
+          }`}>
+            <span className="flex items-center gap-2">
+              {toast.type === 'error' ? <AlertTriangle size={15}/> : toast.type === 'success' ? <CheckCircle2 size={15}/> : <Info size={15}/>}
+              {toast.message}
+            </span>
+            <button onClick={() => setToast(null)} className="opacity-70 hover:opacity-100"><X size={14}/></button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE CONFIRMACIÓN PERSONALIZADO */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-[110] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-5 w-full max-w-xs shadow-2xl space-y-4">
+            <div className="flex items-center gap-2 text-sm font-bold text-white">
+              <AlertTriangle size={18} className={confirmDialog.danger ? 'text-red-400' : 'text-blue-400'} />
+              <span>{confirmDialog.title}</span>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">{confirmDialog.message}</p>
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => closeConfirm(false)}
+                className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => closeConfirm(true)}
+                className={`flex-1 py-2.5 rounded-xl text-white text-xs font-bold transition-colors ${
+                  confirmDialog.danger ? 'bg-red-600 hover:bg-red-500' : 'bg-blue-600 hover:bg-blue-500'
+                }`}
+              >
+                {confirmDialog.confirmText}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* HEADER BALANCE GENERAL (CUADRÍCULA 2x2 + VERSIÓN VISIBLE) */}
+      {view !== 'simulator' && (
+        <div className="bg-gradient-to-b from-slate-900 to-slate-950 p-5 border-b border-slate-800">
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <h2 className="text-xs text-slate-400 font-semibold tracking-wider uppercase flex items-center gap-2">
+                {user.role === 'guest' ? <><User size={12}/> Modo Invitado</> : 'Balance General'}
+              </h2>
+              <span className="inline-block mt-1 bg-blue-500/10 text-blue-400 text-[9px] font-bold px-2 py-0.5 rounded border border-blue-500/20 uppercase tracking-wider">
+                {APP_VERSION}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              {user.role !== 'guest' && (
+                <button
+                  onClick={editingInventory ? () => setEditingInventory(false) : () => { setTempInv(inventory); setEditingInventory(true); }}
+                  title="Ajuste manual de caja"
+                  className={`p-2 rounded-lg transition-colors ${editingInventory ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-400 hover:text-white'}`}
+                >
+                  {editingInventory ? <X size={16}/> : <Edit2 size={16}/>}
+                </button>
+              )}
+              <button onClick={handleLogout} title="Cerrar sesión" className="bg-slate-800 p-2 rounded-lg text-slate-400 hover:text-white">
+                <LogOut size={16}/>
+              </button>
+            </div>
+          </div>
+
+          {user.role === 'guest' ? (
+            <p className="text-xl font-bold text-slate-500 mt-1">Simulación Activa</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2.5 w-full animate-in fade-in slide-in-from-top-2">
+              <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800 flex flex-col justify-center">
+                <p className="text-[9px] text-slate-400 uppercase font-bold mb-0.5">Caja Operativa P2P</p>
+                <p className="text-base font-mono font-bold text-white">${operativeEquity.toFixed(2)}</p>
+              </div>
+              <div className="bg-pink-900/10 p-3 rounded-xl border border-pink-900/30 flex flex-col justify-center">
+                <p className="text-[9px] text-pink-400/80 uppercase font-bold mb-0.5">Por Cobrar</p>
+                <p className="text-base font-mono font-bold text-pink-400">${deferredCapital.toFixed(2)}</p>
+              </div>
+              <div
+                onClick={() => setView('presupuestos')}
+                className="bg-blue-900/10 p-3 rounded-xl border border-blue-500/20 flex flex-col justify-center cursor-pointer hover:bg-blue-900/20 transition-colors"
+              >
+                <p className="text-[9px] text-blue-400/90 uppercase font-bold mb-0.5">Presupuestos</p>
+                <p className={`text-base font-mono font-bold ${totalBuckets < 0 ? 'text-red-400' : 'text-blue-300'}`}>
+                  ${totalBuckets.toFixed(2)}
+                </p>
+              </div>
+              <div className="bg-emerald-900/10 p-3 rounded-xl border border-emerald-900/30 flex flex-col justify-center">
+                <p className="text-[9px] text-emerald-500/90 uppercase font-bold mb-0.5" title="Caja Operativa + Por Cobrar + Presupuestos">
+                  Patrim. Global
+                </p>
+                <p className="text-base font-mono font-bold text-emerald-400">${globalEquity.toFixed(2)}</p>
+              </div>
+            </div>
+          )}
+
+          {editingInventory && user.role !== 'guest' && (
+            <div className="bg-slate-800/50 p-4 rounded-xl border border-blue-500/30 mt-4 animate-in fade-in zoom-in-95">
+              <p className="text-xs text-blue-400 font-bold mb-3 uppercase text-center flex items-center justify-center gap-2">
+                <Edit2 size={12}/> Ajuste Manual de Emergencia
+              </p>
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="text-[10px] text-slate-400">Total USDT</label>
+                  <input type="number" value={tempInv.usdt} onChange={e => setTempInv({ ...tempInv, usdt: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400">Tasa Ref.</label>
+                  <input type="number" value={tempInv.avgPrice} onChange={e => setTempInv({ ...tempInv, avgPrice: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/>
+                </div>
+                <div className="col-span-2">
+                  <label className="text-[10px] text-slate-400">Total Bolívares (VES)</label>
+                  <input type="number" value={tempInv.ves} onChange={e => setTempInv({ ...tempInv, ves: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <button onClick={saveInventoryManual} className="w-full bg-blue-600 py-2 rounded-lg text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-500">
+                  <Save size={14}/> Forzar Guardado
+                </button>
+                <button onClick={handleResetApp} className="w-full bg-red-500/10 border border-red-500/50 py-2 rounded-lg text-red-400 font-bold text-xs flex items-center justify-center gap-2 hover:bg-red-500 hover:text-white transition-colors">
+                  <AlertTriangle size={14}/> Restablecer App a Cero
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* RUTAS DEL BODY */}
+      <div className={view === 'simulator' ? 'p-0' : 'p-4'}>
+        {view === 'cierres' && (
+          <CierresModule
+            transactions={transactions}
+            snapshots={snapshots}
+            inventory={inventory}
+            onSaveSnapshot={handleSaveSnapshot}
+            onTrade={handleTrade}
+            onDeleteTx={handleDeleteTransaction}
+            onDeleteSnap={handleDeleteSnapshot}
+            isGuest={user.role === 'guest'}
+            notify={notify}
+          />
+        )}
+        {view === 'graficas' && (
+          <GraficasModule
+            transactions={transactions}
+            snapshots={snapshots}
+            inventory={inventory}
+            goals={goals}
+            onSaveGoals={handleUpdateGoals}
+            isGuest={user.role === 'guest'}
+          />
+        )}
+        {view === 'deudas' && (
+          <LoansModule
+            loans={loans}
+            user={user}
+            db={db}
+            appId={appId}
+            isGuest={user.role === 'guest'}
+            onTrade={handleTrade}
+            notify={notify}
+            requestConfirm={requestConfirm}
+          />
+        )}
+        {view === 'presupuestos' && (
+          <PresupuestosModule
+            user={user}
+            db={db}
+            appId={appId}
+            buckets={buckets}
+            budgetDetails={budgetDetails}
+            transactions={transactions}
+            isGuest={user.role === 'guest'}
+            onTrade={handleTrade}
+            onDeleteTx={handleDeleteTransaction}
+            inventory={inventory}
+            notify={notify}
+            requestConfirm={requestConfirm}
+          />
+        )}
+        {view === 'simulator' && <SimulatorModule notify={notify} />}
+      </div>
+
+      {/* NAV INFERIOR */}
+      <div className="fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur border-t border-slate-800 flex justify-around p-2.5 max-w-md mx-auto z-50">
+        <NavButton icon={<Save/>} label="Cierres" active={view === 'cierres'} onClick={() => setView('cierres')} />
+        <NavButton icon={<BarChart3/>} label="Gráficas" active={view === 'graficas'} onClick={() => setView('graficas')} />
+        <NavButton icon={<Users/>} label="Deudas" active={view === 'deudas'} onClick={() => setView('deudas')} />
+        <NavButton icon={<Landmark/>} label="Presup." active={view === 'presupuestos'} onClick={() => setView('presupuestos')} />
+        <NavButton icon={<Calculator/>} label="Simulador" active={view === 'simulator'} onClick={() => setView('simulator')} highlight={true} />
+      </div>
+    </div>
+  );
+}
+
+// --- MÓDULO 1: CIERRES MACRO Y GASTOS ---
+function CierresModule({ transactions, snapshots, inventory, onSaveSnapshot, onTrade, onDeleteTx, onDeleteSnap, isGuest, notify }) {
+  const [subTab, setSubTab] = useState('cierre'); 
+  const [snapUsdt, setSnapUsdt] = useState(inventory.usdt);
+  const [snapVes, setSnapVes] = useState(inventory.ves);
+  const [snapRate, setSnapRate] = useState(inventory.avgPrice || 40);
+  const [snapDate, setSnapDate] = useState(getLocalDateString());
+  const [snapNote, setSnapNote] = useState('');
+  const [visibleItems, setVisibleItems] = useState(15); 
+
+  useEffect(() => {
+    setSnapUsdt(inventory.usdt);
+    setSnapVes(inventory.ves);
+    setSnapRate(inventory.avgPrice || 40);
+  }, [inventory]);
+
+  const submitSnapshot = () => {
+    if (safeNum(snapRate) <= 0) {
+      notify("La tasa de valoración debe ser mayor a 0.", "error");
+      return;
+    }
+    const totalEq = safeNum(snapUsdt) + (safeNum(snapVes) / safeNum(snapRate));
+    onSaveSnapshot({
+      date: snapDate,
+      totalUsdt: safeNum(snapUsdt),
+      totalVes: safeNum(snapVes),
+      avgPrice: safeNum(snapRate),
+      netEquityUsdt: totalEq,
+      note: snapNote
+    });
+    setSnapNote('');
+  };
+
+  if (isGuest) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] text-center p-6 opacity-50">
+        <Lock size={48} className="text-slate-600 mb-4"/>
+        <h3 className="text-xl font-bold text-slate-400">Modo Operativo Bloqueado</h3>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 pb-20">
+      <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
+        <button onClick={() => setSubTab('cierre')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${subTab === 'cierre' ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>Cierre Diario</button>
+        <button onClick={() => setSubTab('gasto')} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-colors ${subTab === 'gasto' ? 'bg-red-600 text-white' : 'text-slate-500'}`}>Gastos</button>
+        <button onClick={() => setSubTab('micro')} className={`flex-1 py-2 text-[10px] font-bold rounded-lg transition-colors ${subTab === 'micro' ? 'bg-slate-700 text-white' : 'text-slate-600'}`}>Micro-P2P</button>
+      </div>
+
+      {subTab === 'cierre' && (
+        <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in zoom-in-95">
+          <h3 className="text-xs text-blue-400 font-bold uppercase mb-4 flex items-center gap-2"><Save size={14}/> Registrar Caja Operativa</h3>
+          <div className="space-y-4">
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase font-bold mb-1 block">Fecha del Cierre</label>
+              <input type="date" value={snapDate} onChange={e => setSnapDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 text-sm [color-scheme:dark]"/>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] text-emerald-500 font-bold uppercase mb-1 block">Total Binance (USDT)</label>
+                <input type="number" step="0.01" value={snapUsdt} onChange={e => setSnapUsdt(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-emerald-500/30 outline-none font-mono text-lg"/>
+              </div>
+              <div>
+                <label className="text-[10px] text-blue-400 font-bold uppercase mb-1 block">Total Bancos (VES)</label>
+                <input type="number" step="0.01" value={snapVes} onChange={e => setSnapVes(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-blue-500/30 outline-none font-mono text-lg"/>
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase font-bold mb-1 flex justify-between">
+                <span>Tasa de Valoración (VES/USDT)</span>
+                <span>={((safeNum(snapUsdt) + (safeNum(snapRate) > 0 ? safeNum(snapVes) / safeNum(snapRate) : 0)) || 0).toFixed(2)}$</span>
+              </label>
+              <input type="number" step="0.01" value={snapRate} onChange={e => setSnapRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono"/>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase font-bold mb-1 block">Nota (Opcional)</label>
+              <input type="text" value={snapNote} onChange={e => setSnapNote(e.target.value)} placeholder="Ej: Cierre viernes noche" className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none text-sm"/>
+            </div>
+            <button onClick={submitSnapshot} className="w-full py-3 bg-blue-600 rounded-lg text-white font-bold text-sm shadow-lg hover:bg-blue-500 transition-colors">Guardar Cierre</button>
+          </div>
+        </div>
+      )}
+
+      {subTab === 'gasto' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} forcedMode="expense" isGuest={isGuest} notify={notify} />}
+      {subTab === 'micro' && <TradeForm onTrade={onTrade} onCancel={() => setSubTab('cierre')} isGuest={isGuest} notify={notify} />}
+
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mt-6">Historial Operativo</h3>
+      <div className="space-y-3">
+        {(() => {
+          const mixed = [
+            ...snapshots.map(s => ({ ...s, isSnap: true })),
+            ...transactions.map(t => ({ ...t, isSnap: false }))
+          ].sort((a, b) => {
+            const dateA = a.dateStr || a.date || "1970-01-01";
+            const dateB = b.dateStr || b.date || "1970-01-01";
+            if (dateA !== dateB) return new Date(dateB + 'T12:00:00') - new Date(dateA + 'T12:00:00');
+            const timeA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : (a.clientTimestamp || Date.now());
+            const timeB = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : (b.clientTimestamp || Date.now());
+            return timeB - timeA;
+          });
+          
+          const visibleHistory = mixed.slice(0, visibleItems);
+          const hasMoreHistory = visibleHistory.length < mixed.length;
+
+          const formatDateHeader = (dateString) => {
+            if (!dateString) return 'Desconocido';
+            const d = new Date(dateString + 'T12:00:00'); 
+            const today = new Date();
+            const yesterday = new Date(today);
+            yesterday.setDate(yesterday.getDate() - 1);
+            if (d.toDateString() === today.toDateString()) return 'Hoy';
+            if (d.toDateString() === yesterday.toDateString()) return 'Ayer';
+            return d.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
+          };
+
+          if (mixed.length === 0) return <p className="text-slate-600 text-center py-6">Sin registros.</p>;
+          
+          let lastDateHeader = null;
+
+          return (
+            <>
+              {visibleHistory.map(item => {
+                const semanticDate = item.dateStr || item.date;
+                const dateHeader = formatDateHeader(semanticDate);
+                const showHeader = dateHeader !== lastDateHeader;
+                lastDateHeader = dateHeader;
+
+                return (
+                  <React.Fragment key={`${item.isSnap ? 'snap' : 'tx'}-${item.id}`}>
+                    {showHeader && (
+                      <div className="flex items-center gap-3 mt-6 mb-2">
+                        <div className="h-px bg-slate-800 flex-1"></div>
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{dateHeader}</span>
+                        <div className="h-px bg-slate-800 flex-1"></div>
+                      </div>
+                    )}
+                    
+                    {item.isSnap ? (
+                      <div className="bg-slate-800/40 p-3 rounded-xl border border-blue-500/20 flex justify-between items-center group relative">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 rounded-full bg-blue-500/20 text-blue-400"><Save size={16}/></div>
+                          <div>
+                            <p className="font-bold text-sm text-blue-100">Cierre Operativo</p>
+                            <p className="text-[10px] text-slate-400">{item.date} {item.note ? `- ${item.note}` : ''}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="text-right">
+                            <p className="font-mono font-bold text-emerald-400">${safeNum(item.netEquityUsdt).toFixed(2)}</p>
+                            <p className="text-[10px] text-slate-500">Caja Actual</p>
+                          </div>
+                          <button onClick={() => onDeleteSnap(item)} className="p-2 text-slate-600 hover:text-red-500 transition-colors">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center group relative">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`p-2 rounded-full shrink-0 ${
+                            item.type === 'sell' ? 'bg-red-500/20 text-red-400' : 
+                            item.type === 'buy' ? 'bg-emerald-500/20 text-emerald-400' : 
+                            item.type === 'capital' ? 'bg-purple-500/20 text-purple-400' : 
+                            item.type === 'expense' ? 'bg-red-500/20 text-red-400' : 
+                            item.type === 'withdraw' ? 'bg-slate-500/20 text-slate-400' :
+                            item.type === 'loan_out' ? 'bg-pink-500/20 text-pink-400' :
+                            item.type === 'loan_in' ? 'bg-emerald-500/20 text-emerald-400' :
+                            'bg-orange-500/20 text-orange-400'}`}>
+                            {item.type === 'sell' ? <ArrowUpRight size={16}/> : 
+                             item.type === 'buy' ? <ArrowDownLeft size={16}/> : 
+                             item.type === 'capital' ? <PlusCircle size={16}/> : 
+                             item.type === 'expense' ? <TrendingDown size={16}/> : 
+                             item.type === 'withdraw' ? <LogOut size={16}/> :
+                             item.type === 'loan_out' ? <CornerRightUp size={16}/> :
+                             item.type === 'loan_in' ? <CornerLeftDown size={16}/> :
+                             <RefreshCw size={16}/>}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-bold text-sm text-slate-200 truncate">
+                              {item.type === 'expense' && item.category ? item.category : 
+                               item.type === 'withdraw' ? 'Retiro de Capital' :
+                               item.type === 'sell' ? 'Venta USDT' : 
+                               item.type === 'buy' ? 'Compra USDT' : 
+                               item.type === 'capital' ? 'Fondeo' : 
+                               item.type === 'loan_out' ? `Préstamo a ${item.debtor}` :
+                               item.type === 'loan_in' ? `Cobro a ${item.debtor}` :
+                               item.type === 'swap' ? 'Swap' : 'Gasto'}
+                            </p>
+                            <p className="text-[10px] text-slate-500 truncate">
+                              {item.type === 'expense' && (
+                                <span className={`px-1 py-0.5 rounded text-[8px] mr-1 font-bold ${item.sourceBucket && item.sourceBucket !== 'p2p' ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-700 text-slate-300'}`}>
+                                  {item.sourceBucket && item.sourceBucket !== 'p2p' ? `Fondo: ${item.sourceBucket.toUpperCase()}` : 'Caja P2P'}
+                                </span>
+                              )}
+                              {item.type === 'expense' || item.type === 'withdraw'
+                                ? `${item.description || 'Sin nota'} ${item.currency === 'VES' && item.rate ? `(Tasa: ${item.rate})` : ''}`
+                                : item.type === 'loan_in'
+                                  ? (safeNum(item.amountVES) > 0 ? `Ganancia cambiaria: +$${safeNum(item.devaluationProfit).toFixed(2)}` : 'Pago recibido en USDT')
+                                  : `Tasa: ${safeNum(item.rate)}`}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div className="text-right">
+                            <p className={`font-mono font-bold text-sm ${item.type === 'expense' || item.type === 'loan_out' || item.type === 'withdraw' ? 'text-red-400' : item.type === 'loan_in' ? 'text-emerald-400' : 'text-slate-200'}`}>
+                              {item.type === 'expense' || item.type === 'withdraw'
+                                ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountBS).toLocaleString()}`)
+                                : item.type === 'loan_out'
+                                  ? (item.currency === 'USDT' ? `-$${safeNum(item.amountUSDT).toFixed(2)}` : `-Bs ${safeNum(item.amountVES).toLocaleString()}`)
+                                  : item.type === 'loan_in'
+                                    ? (safeNum(item.amountVES) > 0 ? `+Bs ${safeNum(item.amountVES).toLocaleString()}` : `+$${safeNum(item.amountUSDT).toFixed(2)}`)
+                                    : item.type === 'capital'
+                                      ? `+$${safeNum(item.amount)}`
+                                      : `$${safeNum(item.amountUSDT).toFixed(2)}`}
+                            </p>
+                          </div>
+                          <button onClick={() => onDeleteTx(item)} className="p-2 text-slate-600 hover:text-red-500 transition-colors">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+              
+              <div className="pt-6 pb-2 text-center">
+                {hasMoreHistory ? (
+                  <button onClick={() => setVisibleItems(prev => prev + 15)} className="text-xs font-bold text-slate-300 bg-slate-800 px-5 py-2.5 rounded-full border border-slate-700 hover:bg-blue-600 hover:text-white hover:border-blue-500 transition-all shadow-lg flex items-center justify-center gap-2 mx-auto">
+                    Ver más movimientos <ChevronDown size={14}/>
+                  </button>
+                ) : (
+                  <p className="text-[10px] text-slate-500 italic">Has llegado al inicio de tus registros.</p>
+                )}
+              </div>
+            </>
+          );
+        })()}
+      </div>
+    </div>
+  );
+}
+
+// --- MÓDULO 2: GRÁFICAS Y ANALÍTICA HISTÓRICA ---
+function GraficasModule({ transactions, snapshots, inventory, goals, onSaveGoals, isGuest }) {
+  const [viewMonth, setViewMonth] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); 
+  const [editingGoals, setEditingGoals] = useState(false);
+  const [tempGoals, setTempGoals] = useState(goals);
+  
+  useEffect(() => {
+    setTempGoals(goals);
+  }, [goals]);
+
+  if (isGuest) return <div className="flex justify-center p-10"><Lock className="text-slate-600"/></div>;
+
+  const prevMonth = () => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() - 1, 1));
+  const nextMonth = () => setViewMonth(new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 1));
+  
+  const now = new Date();
+  const isCurrentMonth = viewMonth.getFullYear() === now.getFullYear() && viewMonth.getMonth() === now.getMonth();
+  const monthName = viewMonth.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
+
+  const monthData = useMemo(() => {
+    const year = viewMonth.getFullYear();
+    const month = viewMonth.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0); 
+    const daysInMonth = lastDay.getDate();
+
+    const activeDays = isCurrentMonth ? now.getDate() : daysInMonth;
+    const days = [];
+    
+    const validSnaps = snapshots.filter(s => Boolean(s.date));
+    const prePeriodSnaps = validSnaps
+      .filter(s => new Date(s.date + 'T12:00:00') < firstDay)
+      .sort((a, b) => new Date(b.date + 'T12:00:00') - new Date(a.date + 'T12:00:00'));
+
+    const firstMonthSnaps = validSnaps
+      .filter(s => {
+        const d = new Date(s.date + 'T12:00:00');
+        return d >= firstDay && d <= lastDay;
+      })
+      .sort((a, b) => new Date(a.date + 'T12:00:00') - new Date(b.date + 'T12:00:00'));
+
+    let startingCapital = prePeriodSnaps.length > 0
+      ? safeNum(prePeriodSnaps[0].netEquityUsdt)
+      : (firstMonthSnaps.length > 0 ? safeNum(firstMonthSnaps[0].netEquityUsdt) : 0);
+    let endingCapital = startingCapital;
+    
+    let currentEquity = startingCapital;
+    let totalPeriodProfit = 0;
+    let totalPeriodExpenses = 0; 
+    let totalDeposits = 0;
+    let totalWithdrawals = 0;
+    let totalLoansOut = 0;
+
+    const monthExpenses = transactions.filter(t => {
+      if (!t.dateStr || t.type !== 'expense') return false;
+      const d = new Date(t.dateStr + 'T12:00:00');
+      return d >= firstDay && d <= lastDay;
+    });
+    const byCategory = monthExpenses.reduce((acc, curr) => {
+      const cat = curr.category || 'Otros';
+      const val = safeNum(curr.expenseUSDT) || (safeNum(curr.amountBS) / 40);
+      acc[cat] = (acc[cat] || 0) + val;
+      return acc;
+    }, {});
+
+    for (let i = 0; i < activeDays; i++) {
+      const d = new Date(year, month, i + 1);
+      const dateStr = getLocalDateString(d);
+
+      const daySnaps = validSnaps.filter(s => s.date === dateStr);
+      let endOfDayEquity = currentEquity;
+      if (daySnaps.length > 0) {
+        const latestSnap = [...daySnaps].sort((a, b) => {
+          const tA = a.createdAt?.seconds || a.clientTimestamp || 0;
+          const tB = b.createdAt?.seconds || b.clientTimestamp || 0;
+          return tB - tA;
+        })[0];
+        endOfDayEquity = safeNum(latestSnap.netEquityUsdt);
+        endingCapital = endOfDayEquity; 
+      }
+
+      const dayExpenses = transactions.filter(t => t.type === 'expense' && t.dateStr === dateStr);
+      const sumAllExpenses = dayExpenses.reduce((acc, t) => acc + (safeNum(t.expenseUSDT) || safeNum(t.amountBS) / 40), 0);
+      totalPeriodExpenses += sumAllExpenses;
+
+      const p2pExpenses = dayExpenses.filter(t => !t.sourceBucket || t.sourceBucket === 'p2p');
+      const sumP2pExpenses = p2pExpenses.reduce((acc, t) => acc + (safeNum(t.expenseUSDT) || safeNum(t.amountBS) / 40), 0);
+
+      const dayDeposits = transactions.filter(t => t.type === 'capital' && t.dateStr === dateStr);
+      const sumDeposits = dayDeposits.reduce((acc, t) => acc + (t.currency === 'USDT' ? safeNum(t.amount) : safeNum(t.amount) / 40), 0);
+      totalDeposits += sumDeposits;
+
+      const dayWithdrawals = transactions.filter(t => t.type === 'withdraw' && t.dateStr === dateStr).reduce((acc, t) => acc + safeNum(t.amountUSDT), 0);
+      totalWithdrawals += dayWithdrawals;
+
+      const dayLoansOut = transactions.filter(t => t.type === 'loan_out' && t.dateStr === dateStr).reduce((acc, t) => acc + safeNum(t.amountUSDT), 0);
+      const dayLoansInPrincipal = transactions.filter(t => t.type === 'loan_in' && t.dateStr === dateStr).reduce((acc, t) => acc + safeNum(t.amountUSDT), 0);
+      totalLoansOut += dayLoansOut;
+
+      let dailyProfit = 0;
+      if (daySnaps.length > 0) {
+        dailyProfit = (endOfDayEquity - currentEquity) + sumP2pExpenses + dayLoansOut + dayWithdrawals - sumDeposits - dayLoansInPrincipal;
+        currentEquity = endOfDayEquity; 
+      } else {
+        currentEquity = currentEquity - sumP2pExpenses - dayLoansOut - dayWithdrawals + sumDeposits + dayLoansInPrincipal;
+        dailyProfit = 0; 
+      }
+
+      totalPeriodProfit += dailyProfit;
+      days.push({ label: d.getDate(), dateStr, profit: dailyProfit, expense: sumAllExpenses });
+    }
+
+    const netGrowth = totalPeriodProfit - totalPeriodExpenses; 
+    return { days, startingCapital, endingCapital, totalPeriodProfit, totalPeriodExpenses, netGrowth, byCategory, daysInMonth, totalDeposits, totalWithdrawals, totalLoansOut };
+  }, [snapshots, transactions, viewMonth, isCurrentMonth]);
+
+  const macroTrend = useMemo(() => {
+    const byMonth = {};
+    snapshots.forEach(s => {
+      if (!s.date) return;
+      const prefix = s.date.substring(0, 7); 
+      if (!byMonth[prefix] || new Date(s.date + 'T12:00:00') > new Date(byMonth[prefix].date + 'T12:00:00')) {
+        byMonth[prefix] = s;
+      }
+    });
+    return Object.values(byMonth)
+      .sort((a, b) => new Date(a.date + 'T12:00:00') - new Date(b.date + 'T12:00:00'))
+      .slice(-6)
+      .map(s => ({
+        monthLabel: new Date(s.date + 'T12:00:00').toLocaleString('es-ES', { month: 'short' }),
+        equity: safeNum(s.netEquityUsdt)
+      }));
+  }, [snapshots]);
+
+  const maxProfitVal = Math.max(...monthData.days.map(d => d.profit), 10);
+  const minProfitVal = Math.min(...monthData.days.map(d => d.profit), -10);
+  const maxAbsoluteProfit = Math.max(maxProfitVal, Math.abs(minProfitVal));
+  const maxMacroEquity = Math.max(...macroTrend.map(m => m.equity), 100);
+
+  const targetAmount = safeNum(goals.monthly);
+  const progressPercent = targetAmount > 0 ? (monthData.totalPeriodProfit / targetAmount) * 100 : 0;
+
+  return (
+    <div className="space-y-6 pb-20 animate-in fade-in">
+      <div className="flex justify-between items-center bg-slate-900 p-2 rounded-xl border border-slate-800">
+        <button onClick={prevMonth} className="p-2 text-slate-400 hover:text-white bg-slate-950 rounded-lg"><ChevronLeft size={18}/></button>
+        <h2 className="text-sm font-bold text-white uppercase tracking-wider">{monthName}</h2>
+        <button onClick={nextMonth} disabled={isCurrentMonth} className={`p-2 rounded-lg ${isCurrentMonth ? 'text-slate-800' : 'text-slate-400 hover:text-white bg-slate-950'}`}><ChevronRight size={18}/></button>
+      </div>
+
+      <div className="bg-gradient-to-br from-slate-900 to-slate-950 p-5 rounded-2xl border border-slate-800 shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-4 opacity-10"><Landmark size={64}/></div>
+        <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 border-b border-slate-800 pb-2">Desglose Contable • {monthName}</h3>
+        
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <p className="text-[10px] text-slate-500 uppercase font-bold">Caja Operativa Inic.</p>
+            <p className="font-mono text-slate-300">${monthData.startingCapital.toFixed(2)}</p>
+          </div>
+          <div>
+            <p className="text-[10px] text-slate-500 uppercase font-bold">Caja Operativa Final</p>
+            <p className="font-mono font-bold text-white">${monthData.endingCapital.toFixed(2)}</p>
+          </div>
+        </div>
+
+        <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2 text-sm">
+          <div className="flex justify-between items-center">
+            <span className="text-slate-400 text-xs">Rendimiento P2P (Operativo)</span>
+            <span className="text-emerald-400 font-mono font-bold text-sm">+{monthData.totalPeriodProfit.toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-slate-400 text-xs">Total Fugas / Gastos</span>
+            <span className="text-red-400 font-mono font-bold text-sm">-{monthData.totalPeriodExpenses.toFixed(2)}</span>
+          </div>
+          
+          <div className="border-t border-slate-800 pt-2 flex justify-between items-center">
+            <span className="text-slate-400 text-[10px] uppercase">Fondeos (Inyectados)</span>
+            <span className="text-blue-400 font-mono text-xs">+{monthData.totalDeposits.toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-slate-400 text-[10px] uppercase">Retiros de Capital</span>
+            <span className="text-slate-400 font-mono text-xs">-{monthData.totalWithdrawals.toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-slate-400 text-[10px] uppercase" title="Dinero que prestaste este mes">Volumen Prestado (Histórico)</span>
+            <span className="text-pink-400 font-mono text-xs">-{monthData.totalLoansOut.toFixed(2)}</span>
+          </div>
+
+          <div className="border-t border-slate-800 pt-3 flex justify-between items-center">
+            <span className="text-xs font-bold text-white uppercase" title="Rendimiento P2P menos Todos tus Gastos">Crecimiento Real (Neta)</span>
+            <span className={`font-mono font-black text-lg ${monthData.netGrowth >= 0 ? 'text-blue-400' : 'text-red-500'}`}>
+              {monthData.netGrowth > 0 ? '+' : ''}{monthData.netGrowth.toFixed(2)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {isCurrentMonth && (
+        editingGoals ? (
+          <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
+            <h3 className="text-sm font-bold text-white mb-4"><Target size={14} className="inline mr-2"/> Metas Financieras</h3>
+            <div className="space-y-3">
+              <label className="text-xs text-slate-400">Meta Mensual (USDT)</label>
+              <input type="number" value={tempGoals.monthly} onChange={e => setTempGoals({ ...tempGoals, monthly: parseFloat(e.target.value) || 0 })} className="w-full bg-slate-950 p-3 rounded text-white"/>
+              <label className="text-xs text-slate-400">Meta Diaria Aprox (USDT)</label>
+              <input type="number" value={tempGoals.daily} onChange={e => setTempGoals({ ...tempGoals, daily: parseFloat(e.target.value) || 0 })} className="w-full bg-slate-950 p-3 rounded text-white"/>
+              <div className="flex gap-2 pt-2">
+                <button onClick={() => setEditingGoals(false)} className="flex-1 py-2 bg-slate-800 text-slate-300 rounded">Cancelar</button>
+                <button onClick={() => { onSaveGoals(tempGoals); setEditingGoals(false); }} className="flex-1 py-2 bg-blue-600 text-white rounded">Guardar</button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 relative overflow-hidden shadow-lg">
+            <div className="flex justify-between items-start mb-2 relative z-10">
+              <div>
+                <p className="text-[10px] text-slate-400 uppercase font-bold flex items-center gap-1"><Target size={12}/> Meta Mensual Activa</p>
+                <h2 className="text-2xl font-bold text-white mt-1">${monthData.totalPeriodProfit.toFixed(2)} <span className="text-sm font-normal text-slate-500">/ ${targetAmount}</span></h2>
+              </div>
+              <button onClick={() => setEditingGoals(true)} className="p-2 bg-slate-800 rounded-lg text-slate-400 hover:text-white"><Pencil size={14}/></button>
+            </div>
+            <div className="relative h-3 bg-slate-950 rounded-full overflow-hidden mt-2 z-10 border border-slate-800">
+              <div className={`h-full transition-all duration-1000 ${progressPercent >= 100 ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-blue-500'}`} style={{ width: `${Math.min(Math.max(progressPercent, 0), 100)}%` }}></div>
+            </div>
+          </div>
+        )
+      )}
+
+      <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-xs font-bold text-emerald-400 uppercase">Rendimiento Diario</h3>
+        </div>
+        <div className="h-48 flex items-center justify-between gap-0.5 relative pt-4 pb-4">
+          <div className="absolute w-full border-t border-slate-700 top-1/2 left-0 z-0"></div>
+          {monthData.days.map((d, i) => {
+            const isPositive = d.profit >= 0;
+            const barHeightPercent = (Math.abs(d.profit) / (maxAbsoluteProfit || 1)) * 50; 
+            return (
+              <div key={i} className="flex-1 flex flex-col justify-center relative h-full group">
+                <div className="absolute top-0 opacity-0 group-hover:opacity-100 bg-slate-800 text-xs text-white p-1 rounded whitespace-nowrap z-30 pointer-events-none transition-opacity -translate-y-full left-1/2 -translate-x-1/2 shadow-lg">
+                  Día {d.label}: ${d.profit.toFixed(1)}
+                </div>
+                <div className="w-full h-full relative z-10">
+                  {isPositive ? (
+                    <div className="absolute bottom-1/2 w-full bg-emerald-500/80 rounded-t-sm hover:bg-emerald-400 transition-colors" style={{ height: `${barHeightPercent}%`, minHeight: d.profit > 0 ? '2px' : '0' }}></div>
+                  ) : (
+                    <div className="absolute top-1/2 w-full bg-red-500/80 rounded-b-sm hover:bg-red-400 transition-colors" style={{ height: `${barHeightPercent}%`, minHeight: '2px' }}></div>
+                  )}
+                </div>
+                {(d.label % 5 === 0 || d.label === 1) && (
+                  <span className="text-[8px] text-slate-600 absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-full pt-1">{d.label}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-6 flex justify-between items-center">
+          <p className="text-[10px] text-slate-500">
+            Promedio: ${(monthData.days.length > 0 ? monthData.totalPeriodProfit / monthData.days.length : 0).toFixed(1)} / día activo
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-sm font-bold text-slate-300 flex items-center gap-2"><PieChart size={16}/> Distribución Gastos</h3>
+          <span className="text-xs font-mono text-red-400 font-bold">-${monthData.totalPeriodExpenses.toFixed(2)}</span>
+        </div>
+        <div className="space-y-4">
+          {Object.keys(monthData.byCategory).length === 0 && <p className="text-center text-xs text-slate-600">Sin fugas registradas en {monthName}.</p>}
+          {['Comida', 'Bodega', 'Frutas', 'Club', 'Servicios', 'Alquiler', 'Compras', 'Ropa', 'Ocio', 'Transporte', 'Salud', 'Caridad', 'Regalos', 'Viajes', 'Diezmo', 'Otros'].map(catId => {
+            const amount = monthData.byCategory[catId] || 0;
+            const percent = monthData.totalPeriodExpenses > 0 ? (amount / monthData.totalPeriodExpenses) * 100 : 0;
+            if (amount === 0) return null;
+            
+            let color = 'text-slate-400'; let bar = 'bg-slate-500';
+            if (catId === 'Comida') { color = 'text-orange-400'; bar = 'bg-orange-500'; }
+            if (catId === 'Bodega') { color = 'text-amber-400'; bar = 'bg-amber-500'; }
+            if (catId === 'Frutas') { color = 'text-lime-400'; bar = 'bg-lime-500'; }
+            if (catId === 'Club') { color = 'text-fuchsia-400'; bar = 'bg-fuchsia-500'; }
+            if (catId === 'Servicios') { color = 'text-yellow-400'; bar = 'bg-yellow-500'; }
+            if (catId === 'Alquiler') { color = 'text-indigo-400'; bar = 'bg-indigo-500'; }
+            if (catId === 'Compras') { color = 'text-emerald-400'; bar = 'bg-emerald-500'; }
+            if (catId === 'Ropa') { color = 'text-pink-400'; bar = 'bg-pink-500'; }
+            if (catId === 'Ocio') { color = 'text-red-400'; bar = 'bg-red-500'; }
+            if (catId === 'Transporte') { color = 'text-blue-400'; bar = 'bg-blue-500'; }
+            if (catId === 'Salud') { color = 'text-teal-400'; bar = 'bg-teal-500'; } 
+            if (catId === 'Caridad') { color = 'text-rose-400'; bar = 'bg-rose-500'; } 
+            if (catId === 'Regalos') { color = 'text-violet-400'; bar = 'bg-violet-500'; }
+            if (catId === 'Viajes') { color = 'text-cyan-400'; bar = 'bg-cyan-500'; } 
+            if (catId === 'Diezmo') { color = 'text-indigo-400'; bar = 'bg-indigo-500'; }
+            if (catId === 'Otros') { color = 'text-slate-400'; bar = 'bg-slate-500'; }
+
+            return (
+              <div key={catId}>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className={`flex items-center gap-2 font-bold ${color}`}>{catId}</span>
+                  <span className="text-slate-300 font-mono">${amount.toFixed(2)}</span>
+                </div>
+                <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden">
+                  <div className={`h-full ${bar}`} style={{ width: `${percent}%` }}></div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 mt-8">
+        <h3 className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+          <TrendingUp size={14}/> Evolución Patrimonial
+        </h3>
+        {macroTrend.length < 2 ? (
+          <p className="text-xs text-slate-500 text-center py-4">Se necesitan al menos 2 meses de registros para ver la evolución macro.</p>
+        ) : (
+          <div className="h-32 flex items-end justify-between gap-2 pt-4 relative">
+            {macroTrend.map((m, i) => (
+              <div key={i} className="flex-1 flex flex-col justify-end items-center group relative h-full">
+                <div className="absolute bottom-full mb-1 opacity-0 group-hover:opacity-100 bg-blue-900 text-xs text-white p-1 rounded whitespace-nowrap z-20 transition-opacity">
+                  ${m.equity.toFixed(0)}
+                </div>
+                <div className="w-full bg-blue-500/30 border-t-2 border-blue-400 rounded-t-sm hover:bg-blue-500/50 transition-colors" style={{ height: `${(m.equity / maxMacroEquity) * 100}%`, minHeight: '10px' }}></div>
+                <span className="text-[10px] text-slate-400 font-bold mt-2 uppercase">{m.monthLabel}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- MÓDULO 3: DEUDAS ---
+function LoansModule({ loans, user, db, appId, isGuest, onTrade, notify, requestConfirm }) {
+  const [name, setName] = useState(''); 
+  const [currency, setCurrency] = useState('VES');
+  const [amount, setAmount] = useState(''); 
+  const [rateP2P, setRateP2P] = useState(''); 
+  const [loanDate, setLoanDate] = useState(getLocalDateString()); 
+  
+  const [settleId, setSettleId] = useState(null); 
+  const [settleCurrency, setSettleCurrency] = useState('USDT'); 
+  const [settleVes, setSettleVes] = useState('');
+  const [settleUsdt, setSettleUsdt] = useState('');
+  const [settleRate, setSettleRate] = useState('');
+
+  if (isGuest) return <div className="text-center p-10 text-slate-500">Deudas desactivadas</div>;
+
+  const addLoan = async () => {
+    if (!name || !amount || !rateP2P) {
+      notify("Completa deudor, monto y tasa actual.", "error");
+      return;
+    }
+    const valAmount = parseFloat(amount);
+    const valRate = parseFloat(rateP2P);
+    if (valAmount <= 0 || valRate <= 0) {
+      notify("El monto y la tasa deben ser mayores a 0.", "error");
+      return;
+    }
+    
+    const amountUsd = currency === 'USDT' ? valAmount : valAmount / valRate;
+    const amountVes = currency === 'VES' ? valAmount : valAmount * valRate;
+
+    try {
+      const ok = await onTrade({
+        type: 'loan_out',
+        debtor: name,
+        currency: currency,
+        amountUSDT: amountUsd,
+        amountVES: amountVes,
+        rate: valRate,
+        dateStr: loanDate
+      });
+      if (!ok) return;
+
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'loans'), {
+        debtor: name,
+        amountUsd: amountUsd,
+        initialRate: valRate,
+        initialVes: amountVes,
+        active: true,
+        dateStr: loanDate,
+        createdAt: serverTimestamp()
+      });
+      setName('');
+      setAmount('');
+      setRateP2P('');
+    } catch (error) {
+      console.error(error);
+      notify("Error al crear préstamo: " + error.message, "error");
+    }
+  };
+
+  const handleSettle = async (isPartial = false) => {
+    const loanToSettle = loans.find(l => l.id === settleId);
+    if (!loanToSettle) return;
+    
+    let receivedUsd = 0;
+    let valVes = 0;
+    let valRate = 1;
+
+    if (settleCurrency === 'VES') {
+      if (!settleRate || !settleVes) {
+        notify("Ingresa los Bs recibidos y la tasa del día.", "error");
+        return;
+      }
+      valVes = parseFloat(settleVes);
+      valRate = parseFloat(settleRate);
+      if (valVes <= 0 || valRate <= 0) return;
+      receivedUsd = valVes / valRate;
+    } else {
+      if (!settleUsdt) {
+        notify("Ingresa los USDT recibidos.", "error");
+        return;
+      }
+      receivedUsd = parseFloat(settleUsdt);
+      if (receivedUsd <= 0) return;
+    }
+
+    if (!isPartial && receivedUsd < (loanToSettle.amountUsd * 0.98)) {
+      const ok = await requestConfirm("El monto recibido es menor a la deuda total. ¿Registrar de todas formas como Liquidado?", {
+        title: 'Liquidación menor a la deuda',
+        confirmText: 'Sí, liquidar',
+        danger: true
+      });
+      if (!ok) return;
+    }
+
+    const profit = (settleCurrency === 'VES' && !isPartial) ? receivedUsd - loanToSettle.amountUsd : 0;
+
+    try {
+      const ok = await onTrade({
+        type: 'loan_in',
+        debtor: loanToSettle.debtor,
+        amountVES: valVes,
+        amountUSDT: receivedUsd,
+        devaluationProfit: profit,
+        rate: valRate,
+        dateStr: getLocalDateString()
+      });
+      if (!ok) return;
+
+      if (isPartial && receivedUsd < loanToSettle.amountUsd) {
+        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', settleId), {
+          amountUsd: loanToSettle.amountUsd - receivedUsd
+        });
+      } else {
+        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'loans', settleId));
+      }
+      setSettleId(null);
+      setSettleRate('');
+      setSettleVes('');
+      setSettleUsdt('');
+    } catch (error) {
+      console.error(error);
+      notify("Error al liquidar deuda: " + error.message, "error");
+    }
+  };
+
+  return (
+    <div className="space-y-4 pb-20 animate-in fade-in">
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-lg">
+        <h3 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2"><PiggyBank size={16} className="text-pink-400"/> Otorgar Préstamo</h3>
+        <div className="space-y-3">
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Nombre del Deudor" className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500"/>
+          
+          <div className="flex bg-slate-950 p-1 rounded-lg">
+            <button onClick={() => setCurrency('VES')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${currency === 'VES' ? 'bg-slate-800 text-white' : 'text-slate-600'}`}>En Bolívares</button>
+            <button onClick={() => setCurrency('USDT')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${currency === 'USDT' ? 'bg-slate-800 text-emerald-400' : 'text-slate-600'}`}>En USDT</button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Monto a Prestar</label>
+              <input value={amount} onChange={e => setAmount(e.target.value)} type="number" placeholder="Ej: 100" className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500"/>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Tasa USDT Actual</label>
+              <input value={rateP2P} onChange={e => setRateP2P(e.target.value)} type="number" placeholder="Ej: 40.5" className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500"/>
+            </div>
+          </div>
+          
+          <div>
+            <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 block">Fecha del Préstamo</label>
+            <input type="date" value={loanDate} onChange={e => setLoanDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-xl text-sm text-white border border-slate-700 outline-none focus:border-pink-500 [color-scheme:dark]"/>
+          </div>
+          
+          {amount && rateP2P && safeNum(rateP2P) > 0 && (
+            <div className="bg-pink-900/10 p-3 rounded-lg text-xs text-pink-200 border border-pink-900/30 text-center">
+              Bloquearás: <span className="font-mono font-bold text-pink-400">{currency === 'USDT' ? amount : (parseFloat(amount) / parseFloat(rateP2P)).toFixed(2)} USDT</span> de tu Saldo Operativo.
+            </div>
+          )}
+
+          <button onClick={addLoan} className="w-full bg-pink-600 hover:bg-pink-500 py-3 rounded-xl text-sm font-bold text-white shadow-lg transition-colors mt-2 flex justify-center items-center gap-2">
+            <CornerRightUp size={16}/> Debitar y Prestar
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider pl-1">Capital Diferido (Por Cobrar)</h3>
+        {loans.length === 0 && <p className="text-center text-slate-600 text-sm py-4">Nadie te debe dinero actualmente.</p>}
+        {loans.map(loan => (
+          <div key={loan.id} className="bg-slate-900 p-4 rounded-xl border border-slate-800 relative overflow-hidden group">
+            {settleId === loan.id ? (
+              <div className="animate-in fade-in slide-in-from-right-4">
+                <p className="text-xs text-emerald-400 font-bold mb-2">Cobro a {loan.debtor} (Deuda: ${safeNum(loan.amountUsd).toFixed(2)})</p>
+                
+                <div className="flex bg-slate-950 p-1 rounded-lg mb-2">
+                  <button onClick={() => setSettleCurrency('USDT')} className={`flex-1 py-1 text-[10px] font-bold uppercase rounded ${settleCurrency === 'USDT' ? 'bg-slate-800 text-emerald-400' : 'text-slate-600'}`}>En USDT</button>
+                  <button onClick={() => setSettleCurrency('VES')} className={`flex-1 py-1 text-[10px] font-bold uppercase rounded ${settleCurrency === 'VES' ? 'bg-slate-800 text-white' : 'text-slate-600'}`}>En Bs</button>
+                </div>
+
+                {settleCurrency === 'VES' ? (
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <input type="number" value={settleVes} onChange={e => setSettleVes(e.target.value)} placeholder="Bs Recibidos" className="bg-slate-950 p-2 rounded text-white border border-emerald-500/30 text-sm outline-none"/>
+                    <input type="number" value={settleRate} onChange={e => setSettleRate(e.target.value)} placeholder="Tasa USDT Hoy" className="bg-slate-950 p-2 rounded text-white border border-emerald-500/30 text-sm outline-none"/>
+                  </div>
+                ) : (
+                  <div className="mb-2">
+                    <input type="number" value={settleUsdt} onChange={e => setSettleUsdt(e.target.value)} placeholder="USDT Recibidos" className="w-full bg-slate-950 p-2 rounded text-white border border-emerald-500/30 text-sm outline-none"/>
+                  </div>
+                )}
+                
+                {settleCurrency === 'VES' && settleVes && settleRate && safeNum(settleRate) > 0 && (
+                  <p className="text-[10px] text-slate-400 mt-2 mb-3 bg-slate-950 p-2 rounded border border-slate-800">
+                    Recuperas <span className="text-white font-mono font-bold">{(parseFloat(settleVes) / parseFloat(settleRate)).toFixed(2)} USDT</span>. 
+                    (Ganancia generada: <span className="text-emerald-400 font-bold">+${((parseFloat(settleVes) / parseFloat(settleRate)) - loan.amountUsd).toFixed(2)}</span>)
+                  </p>
+                )}
+
+                <div className="flex gap-2">
+                  <button onClick={() => setSettleId(null)} className="flex-1 bg-slate-800 py-2 rounded text-slate-300 text-sm">Cancelar</button>
+                  <button onClick={() => handleSettle(true)} className="flex-1 bg-blue-600 hover:bg-blue-500 py-2 rounded text-white font-bold text-xs flex justify-center items-center">Abono Parcial</button>
+                  <button onClick={() => handleSettle(false)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2 rounded text-white font-bold text-xs flex justify-center items-center"><CornerLeftDown size={14}/> Liquidar</button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-between items-center">
+                <div>
+                  <p className="text-sm font-bold text-white flex items-center gap-2"><User size={14} className="text-slate-500"/> {loan.debtor}</p>
+                  <p className="text-[10px] text-slate-500 mt-1">Salió a Tasa: {loan.initialRate}</p>
+                </div>
+                <div className="text-right">
+                  <span className="font-mono text-lg font-black text-pink-400 block">${safeNum(loan.amountUsd).toFixed(2)}</span>
+                  <button onClick={() => setSettleId(loan.id)} className="text-[10px] bg-slate-800 text-slate-300 px-3 py-1 rounded-full mt-1 border border-slate-700 hover:bg-emerald-600 hover:text-white transition-colors">
+                    Recibir Pago
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// --- MÓDULO 4: PRESUPUESTOS PERSONALES (V4.17 CON TOTALIZADOR, TRANSFERENCIAS E HISTORIAL DE CUBETAS) ---
+function PresupuestosModule({ user, db, appId, buckets, budgetDetails, transactions, isGuest, onTrade, onDeleteTx, inventory, notify, requestConfirm }) {
   const [distributeAmount, setDistributeAmount] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [editingBuckets, setEditingBuckets] = useState(false);
@@ -19,16 +1554,18 @@ function PresupuestosModule({ user, db, appId, buckets, budgetDetails, transacti
   const [transferAmount, setTransferAmount] = useState('');
   const [transferFeedback, setTransferFeedback] = useState(null);
   
-  // Estados para nuevos items
+  // Estados para metas y activos
   const [newItemName, setNewItemName] = useState('');
   const [newItemTarget, setNewItemTarget] = useState('');
-  const [fundAmount, setFundAmount] = useState('');
+  const [fundAmounts, setFundAmounts] = useState({});
+
+  const totalPersonalFunds = safeNum(buckets.diezmo) + safeNum(buckets.sostenimiento) + safeNum(buckets.proyectos) + safeNum(buckets.patrimonio) + safeNum(buckets.reserva);
 
   const updateDetails = async (newDetails) => {
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'details'), newDetails);
   };
 
-  // Lógica de transferencia interna entre cubetas (sin afectar Caja P2P)
+  // Transferencia interna entre cubetas sin tocar la Caja Operativa P2P
   const handleTransferBuckets = async () => {
     setTransferFeedback(null);
     const amt = parseFloat(transferAmount);
@@ -52,7 +1589,11 @@ function PresupuestosModule({ user, db, appId, buckets, budgetDetails, transacti
 
       await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
       setTransferAmount('');
-      setTransferFeedback({ type: 'success', text: `Se transfirieron $${amt.toFixed(2)} correctamente.` });
+      setTransferFeedback({
+        type: 'success',
+        text: `Se transfirieron $${amt.toFixed(2)} de ${BUCKET_LABELS[transferFrom]} a ${BUCKET_LABELS[transferTo]}.`
+      });
+      notify("Transferencia entre cubetas realizada.", "success");
     } catch (error) {
       console.error("Error al transferir entre cubetas:", error);
       setTransferFeedback({ type: 'error', text: 'Error al guardar la transferencia: ' + error.message });
@@ -62,101 +1603,1277 @@ function PresupuestosModule({ user, db, appId, buckets, budgetDetails, transacti
   };
 
   const handleDistribute = async () => {
-// ... existing code ...
-      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider pl-1 mt-6 flex justify-between items-center">
-          Mis Cubetas Personales
-          <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  setTransferringBuckets(!transferringBuckets);
-                  setEditingBuckets(false);
-                  setTransferFeedback(null);
-                }}
-                title="Transferir entre cubetas"
-                className={`p-2 transition-colors ${transferringBuckets ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-400 hover:text-white bg-slate-800'} rounded-lg`}
-              >
-                  {transferringBuckets ? <X size={14}/> : <ArrowRightLeft size={14}/>}
-              </button>
-              <button
-                onClick={() => {
-                  setTempBuckets(buckets);
-                  setEditingBuckets(!editingBuckets);
-                  setTransferringBuckets(false);
-                }}
-                title="Ajuste manual"
-                className={`p-2 transition-colors ${editingBuckets ? 'bg-blue-500/20 text-blue-400' : 'text-slate-400 hover:text-white bg-slate-800'} rounded-lg`}
-              >
-                  {editingBuckets ? <X size={14}/> : <Edit2 size={14}/>}
-              </button>
+    if (isGuest) {
+      notify("Modo Invitado: Distribución bloqueada.", "error");
+      return;
+    }
+    const amount = parseFloat(distributeAmount);
+    if (!amount || amount <= 0) {
+      notify("Ingresa un monto válido para distribuir.", "error");
+      return;
+    }
+
+    const ok = await requestConfirm(
+      `¿Debitar $${amount.toFixed(2)} USDT de tu Caja Operativa P2P y distribuirlos bajo la matriz 20/30/20/20/10 en tus cubetas personales?`,
+      { title: 'Procesar traspaso mensual', confirmText: 'Distribuir ahora' }
+    );
+    if (!ok) return;
+
+    setIsProcessing(true);
+    try {
+      let dDiezmo = 0, dSost = 0, dProy = 0, dPatr = 0, dRes = 0;
+      const base = Math.min(amount, 1200);
+      const surplus = Math.max(0, amount - 1200);
+
+      dDiezmo += base * 0.20;
+      dSost += base * 0.30;
+      dProy += base * 0.20;
+      dPatr += base * 0.20;
+      dRes += base * 0.10;
+
+      if (surplus > 0) {
+        dDiezmo += surplus * 0.20;
+        dProy += surplus * 0.40;
+        dPatr += surplus * 0.40;
+      }
+
+      const newBuckets = {
+        diezmo: safeNum(buckets.diezmo) + dDiezmo,
+        sostenimiento: safeNum(buckets.sostenimiento) + dSost,
+        proyectos: safeNum(buckets.proyectos) + dProy,
+        patrimonio: safeNum(buckets.patrimonio) + dPatr,
+        reserva: safeNum(buckets.reserva) + dRes
+      };
+
+      const withdrawOk = await onTrade({
+        type: 'withdraw',
+        currency: 'USDT',
+        amountUSDT: amount,
+        amountBS: 0,
+        rate: inventory.avgPrice || 40,
+        description: 'Traspaso a Presupuesto Personal',
+        dateStr: getLocalDateString()
+      });
+      if (!withdrawOk) {
+        setIsProcessing(false);
+        return;
+      }
+
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newBuckets);
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'distributions'), {
+        amountDistributed: amount,
+        breakdown: { diezmo: dDiezmo, sostenimiento: dSost, proyectos: dProy, patrimonio: dPatr, reserva: dRes },
+        dateStr: getLocalDateString(),
+        createdAt: serverTimestamp()
+      });
+
+      setDistributeAmount('');
+      notify("Capital debitado de P2P y distribuido en tus cubetas.", "success");
+    } catch (error) {
+      console.error("Error al distribuir:", error);
+      notify("Error al distribuir: " + error.message, "error");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Gastos del mes actual aplicados a Sostenimiento
+  const spentThisMonthSostenimiento = useMemo(() => {
+    const now = new Date();
+    const firstDay = getLocalDateString(new Date(now.getFullYear(), now.getMonth(), 1));
+    const sostTx = transactions.filter(t => t.type === 'expense' && t.sourceBucket === 'sostenimiento' && t.dateStr >= firstDay);
+    return {
+      alquiler: sostTx.filter(t => t.category === 'Alquiler' || t.category === 'Servicios').reduce((a, b) => a + safeNum(b.expenseUSDT), 0),
+      mercado: sostTx.filter(t => ['Comida', 'Bodega', 'Frutas'].includes(t.category)).reduce((a, b) => a + safeNum(b.expenseUSDT), 0),
+      salidas: sostTx.filter(t => ['Ocio', 'Club'].includes(t.category)).reduce((a, b) => a + safeNum(b.expenseUSDT), 0)
+    };
+  }, [transactions]);
+
+  // Historial reciente de gastos cargados a cubetas personales
+  const recentBucketExpenses = useMemo(() => {
+    return transactions
+      .filter(t => t.type === 'expense' && t.sourceBucket && t.sourceBucket !== 'p2p')
+      .sort((a, b) => {
+        const dateA = a.dateStr || "1970-01-01";
+        const dateB = b.dateStr || "1970-01-01";
+        if (dateA !== dateB) return new Date(dateB + 'T12:00:00') - new Date(dateA + 'T12:00:00');
+        const timeA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : (a.clientTimestamp || Date.now());
+        const timeB = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : (b.clientTimestamp || Date.now());
+        return timeB - timeA;
+      })
+      .slice(0, 8);
+  }, [transactions]);
+
+  if (isGuest) return <div className="text-center p-10 text-slate-500">Presupuestos desactivados</div>;
+
+  // --- SUBVISTA: SOSTENIMIENTO FIJO ---
+  if (activeCard === 'sostenimiento') {
+    return (
+      <div className="space-y-4 pb-20 animate-in slide-in-from-right">
+        <button onClick={() => setActiveCard(null)} className="text-slate-400 flex items-center gap-2 hover:text-white text-xs font-bold">
+          <ChevronLeft size={16}/> Volver a Cubetas
+        </button>
+        <div className="bg-orange-900/10 p-5 rounded-2xl border border-orange-500/20">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-bold text-orange-400 flex items-center gap-2"><ShieldCheck size={18}/> Sostenimiento Fijo</h3>
+            <span className={`font-mono font-bold text-sm ${safeNum(buckets.sostenimiento) < 0 ? 'text-red-400' : 'text-white'}`}>
+              Disp: ${safeNum(buckets.sostenimiento).toFixed(2)}
+            </span>
           </div>
+          <div className="space-y-6">
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-300">Alquiler y Servicios (Ref $140)</span>
+                <span className="text-orange-300 font-mono">${spentThisMonthSostenimiento.alquiler.toFixed(2)}</span>
+              </div>
+              <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden">
+                <div className="h-full bg-orange-500" style={{ width: `${Math.min((spentThisMonthSostenimiento.alquiler / 140) * 100, 100)}%` }}></div>
+              </div>
+            </div>
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-300">Mercado / Comida (Ref $150)</span>
+                <span className="text-orange-300 font-mono">${spentThisMonthSostenimiento.mercado.toFixed(2)}</span>
+              </div>
+              <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden">
+                <div className="h-full bg-orange-500" style={{ width: `${Math.min((spentThisMonthSostenimiento.mercado / 150) * 100, 100)}%` }}></div>
+              </div>
+            </div>
+            <div>
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-slate-300">Salidas / Ocio (Límite $70)</span>
+                <span className={`${spentThisMonthSostenimiento.salidas > 70 ? 'text-red-400 font-bold' : 'text-orange-300'} font-mono`}>
+                  ${spentThisMonthSostenimiento.salidas.toFixed(2)} / $70
+                </span>
+              </div>
+              <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden">
+                <div className={`h-full ${spentThisMonthSostenimiento.salidas > 70 ? 'bg-red-500' : 'bg-orange-500'}`} style={{ width: `${Math.min((spentThisMonthSostenimiento.salidas / 70) * 100, 100)}%` }}></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- SUBVISTA: PROYECTOS Y VIAJES ---
+  if (activeCard === 'proyectos') {
+    const proyList = budgetDetails.proyectos || [];
+    const allocated = proyList.reduce((acc, p) => acc + safeNum(p.funded), 0);
+    const unallocated = safeNum(buckets.proyectos) - allocated;
+    
+    const addProject = async () => {
+      if (!newItemName || !newItemTarget || safeNum(newItemTarget) <= 0) {
+        notify("Ingresa nombre y meta válida.", "error");
+        return;
+      }
+      try {
+        const newList = [...proyList, { id: Date.now().toString(), name: newItemName, target: parseFloat(newItemTarget), funded: 0 }];
+        await updateDetails({ ...budgetDetails, proyectos: newList });
+        setNewItemName('');
+        setNewItemTarget('');
+        notify("Meta agregada correctamente.", "success");
+      } catch (e) {
+        notify("Error al guardar meta: " + e.message, "error");
+      }
+    };
+    
+    const fundProject = async (id) => {
+      const amt = parseFloat(fundAmounts[id]);
+      if (!amt || amt <= 0) {
+        notify("Ingresa un monto válido.", "error");
+        return;
+      }
+      if (amt > unallocated + 0.001) {
+        notify("El monto supera tu capital sin asignar.", "error");
+        return;
+      }
+      try {
+        const newList = proyList.map(p => p.id === id ? { ...p, funded: safeNum(p.funded) + amt } : p);
+        await updateDetails({ ...budgetDetails, proyectos: newList });
+        setFundAmounts(prev => ({ ...prev, [id]: '' }));
+        notify("Fondos asignados a la meta.", "success");
+      } catch (e) {
+        notify("Error al fondear: " + e.message, "error");
+      }
+    };
+
+    const deleteProject = async (id) => {
+      const ok = await requestConfirm("¿Borrar esta meta y devolver sus fondos al capital sin asignar de Proyectos?", {
+        title: 'Eliminar proyecto',
+        confirmText: 'Sí, borrar',
+        danger: true
+      });
+      if (!ok) return;
+      try {
+        const newList = proyList.filter(p => p.id !== id);
+        await updateDetails({ ...budgetDetails, proyectos: newList });
+        notify("Proyecto eliminado y fondos liberados.", "success");
+      } catch (e) {
+        notify("Error al borrar: " + e.message, "error");
+      }
+    };
+
+    return (
+      <div className="space-y-4 pb-20 animate-in slide-in-from-right">
+        <button onClick={() => setActiveCard(null)} className="text-slate-400 flex items-center gap-2 hover:text-white text-xs font-bold">
+          <ChevronLeft size={16}/> Volver a Cubetas
+        </button>
+        <div className="bg-fuchsia-900/10 p-5 rounded-2xl border border-fuchsia-500/20">
+          <h3 className="text-lg font-bold text-fuchsia-400 flex items-center gap-2 mb-2"><Plane size={18}/> Proyectos y Viajes</h3>
+          <div className="bg-slate-900 p-3 rounded-lg flex justify-between items-center border border-slate-800">
+            <span className="text-xs text-slate-400">Capital Sin Asignar</span>
+            <span className={`font-mono font-bold ${unallocated < 0 ? 'text-red-400' : 'text-fuchsia-300'}`}>${unallocated.toFixed(2)}</span>
+          </div>
+        </div>
+        
+        <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+          <p className="text-xs font-bold text-slate-400 mb-2">Nueva Meta</p>
+          <div className="flex gap-2">
+            <input type="text" placeholder="Ej: Boda" value={newItemName} onChange={e => setNewItemName(e.target.value)} className="flex-1 bg-slate-950 p-2 rounded text-white text-xs outline-none border border-slate-700"/>
+            <input type="number" placeholder="Meta $" value={newItemTarget} onChange={e => setNewItemTarget(e.target.value)} className="w-20 bg-slate-950 p-2 rounded text-white text-xs outline-none border border-slate-700"/>
+            <button onClick={addProject} className="bg-fuchsia-600 hover:bg-fuchsia-500 p-2 rounded text-white"><PlusCircle size={16}/></button>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {proyList.length === 0 && <p className="text-center text-xs text-slate-500 py-4">Sin proyectos registrados todavía.</p>}
+          {proyList.map(p => (
+            <div key={p.id} className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+              <div className="flex justify-between items-center mb-2">
+                <span className="font-bold text-sm text-slate-200">{p.name}</span>
+                <span className="font-mono text-xs text-fuchsia-400">${safeNum(p.funded).toFixed(2)} / ${safeNum(p.target)}</span>
+              </div>
+              <div className="h-1.5 w-full bg-slate-950 rounded-full overflow-hidden mb-3">
+                <div className="h-full bg-fuchsia-500" style={{ width: `${Math.min((safeNum(p.funded) / (safeNum(p.target) || 1)) * 100, 100)}%` }}></div>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  placeholder="$ Asignar"
+                  value={fundAmounts[p.id] || ''}
+                  onChange={e => setFundAmounts(prev => ({ ...prev, [p.id]: e.target.value }))}
+                  className="w-24 bg-slate-950 p-1.5 rounded text-white text-xs outline-none border border-slate-700"
+                />
+                <button onClick={() => fundProject(p.id)} className="bg-slate-800 text-fuchsia-400 px-3 py-1.5 rounded text-xs font-bold hover:bg-slate-700">Fondear</button>
+                <button onClick={() => deleteProject(p.id)} className="ml-auto text-slate-600 hover:text-red-400 p-1.5"><Trash2 size={14}/></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // --- SUBVISTA: PATRIMONIO / PORTAFOLIO ---
+  if (activeCard === 'patrimonio') {
+    const patrList = budgetDetails.patrimonio || [];
+    const allocated = patrList.reduce((acc, p) => acc + safeNum(p.balance), 0);
+    const unallocated = safeNum(buckets.patrimonio) - allocated;
+    
+    const addAsset = async () => {
+      if (!newItemName) return;
+      try {
+        const newList = [...patrList, { id: Date.now().toString(), name: newItemName, balance: 0 }];
+        await updateDetails({ ...budgetDetails, patrimonio: newList });
+        setNewItemName('');
+        notify("Activo añadido al portafolio.", "success");
+      } catch (e) {
+        notify("Error al añadir activo: " + e.message, "error");
+      }
+    };
+    
+    const updateAssetBalance = async (id, newBalanceRaw) => {
+      const parsed = parseFloat(newBalanceRaw);
+      if (isNaN(parsed)) return;
+      const targetAsset = patrList.find(p => p.id === id);
+      if (!targetAsset) return;
+      const diff = parsed - safeNum(targetAsset.balance);
+      if (diff === 0) return;
+
+      try {
+        const newList = patrList.map(p => p.id === id ? { ...p, balance: parsed } : p);
+        await updateDetails({ ...budgetDetails, patrimonio: newList });
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), {
+          ...buckets,
+          patrimonio: safeNum(buckets.patrimonio) + diff
+        });
+        notify("Balance del activo actualizado.", "success");
+      } catch (e) {
+        notify("Error al actualizar activo: " + e.message, "error");
+      }
+    };
+
+    const deleteAsset = async (id) => {
+      const ok = await requestConfirm("¿Borrar este activo? Su valor volverá a 'Capital por Invertir'.", {
+        title: 'Eliminar activo',
+        confirmText: 'Sí, borrar',
+        danger: true
+      });
+      if (!ok) return;
+      try {
+        const newList = patrList.filter(p => p.id !== id);
+        await updateDetails({ ...budgetDetails, patrimonio: newList });
+        notify("Activo eliminado.", "success");
+      } catch (e) {
+        notify("Error al borrar activo: " + e.message, "error");
+      }
+    };
+
+    return (
+      <div className="space-y-4 pb-20 animate-in slide-in-from-right">
+        <button onClick={() => setActiveCard(null)} className="text-slate-400 flex items-center gap-2 hover:text-white text-xs font-bold">
+          <ChevronLeft size={16}/> Volver a Cubetas
+        </button>
+        <div className="bg-emerald-900/10 p-5 rounded-2xl border border-emerald-500/20">
+          <h3 className="text-lg font-bold text-emerald-400 flex items-center gap-2 mb-2"><TrendingUp size={18}/> Portafolio de Inversión</h3>
+          <div className="bg-slate-900 p-3 rounded-lg flex justify-between items-center border border-slate-800">
+            <span className="text-xs text-slate-400">Capital por Invertir</span>
+            <span className={`font-mono font-bold ${unallocated < 0 ? 'text-red-400' : 'text-emerald-300'}`}>${unallocated.toFixed(2)}</span>
+          </div>
+        </div>
+        
+        <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
+          <p className="text-xs font-bold text-slate-400 mb-2">Nuevo Activo</p>
+          <div className="flex gap-2">
+            <input type="text" placeholder="Ej: Airtm USDC / BTC Spot" value={newItemName} onChange={e => setNewItemName(e.target.value)} className="flex-1 bg-slate-950 p-2 rounded text-white text-xs outline-none border border-slate-700"/>
+            <button onClick={addAsset} className="bg-emerald-600 hover:bg-emerald-500 p-2 rounded text-white"><PlusCircle size={16}/></button>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {patrList.length === 0 && <p className="text-center text-xs text-slate-500 py-4">Sin activos registrados todavía.</p>}
+          {patrList.map(p => (
+            <div key={p.id} className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex flex-col gap-2">
+              <div className="flex justify-between items-center">
+                <span className="font-bold text-sm text-slate-200">{p.name}</span>
+                <button onClick={() => deleteAsset(p.id)} className="text-slate-600 hover:text-red-400"><Trash2 size={14}/></button>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500 shrink-0">Valor USD:</span>
+                <input type="number" step="0.01" defaultValue={p.balance} onBlur={e => updateAssetBalance(p.id, e.target.value)} className="w-full bg-slate-950 p-2 rounded text-white font-mono text-sm outline-none border border-slate-700 focus:border-emerald-500"/>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // --- SUBVISTA: DIEZMO Y OFRENDAS ---
+  if (activeCard === 'diezmo') {
+    const diezmo = safeNum(buckets.diezmo);
+    return (
+      <div className="space-y-4 pb-20 animate-in slide-in-from-right">
+        <button onClick={() => setActiveCard(null)} className="text-slate-400 flex items-center gap-2 hover:text-white text-xs font-bold">
+          <ChevronLeft size={16}/> Volver a Cubetas
+        </button>
+        <div className="bg-indigo-900/10 p-5 rounded-2xl border border-indigo-500/20">
+          <h3 className="text-lg font-bold text-indigo-400 flex items-center gap-2 mb-2"><Heart size={18}/> Diezmo y Ofrendas</h3>
+          <h2 className="text-3xl font-black text-white mb-4">${diezmo.toFixed(2)}</h2>
+          <div className="space-y-3 bg-slate-900/50 p-4 rounded-xl border border-slate-800">
+            <p className="text-[10px] text-slate-400 uppercase font-bold mb-2">Sugerencia de Distribución</p>
+            <div className="flex justify-between text-xs"><span className="text-slate-300">Iglesia Local (50%)</span><span className="font-mono text-indigo-300">${(Math.max(0, diezmo) * 0.5).toFixed(2)}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-slate-300">Ofrenda de Amor (45%)</span><span className="font-mono text-indigo-300">${(Math.max(0, diezmo) * 0.45).toFixed(2)}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-slate-300">Apoyo Social (5%)</span><span className="font-mono text-indigo-300">${(Math.max(0, diezmo) * 0.05).toFixed(2)}</span></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- VISTA PRINCIPAL DEL MÓDULO PRESUPUESTOS ---
+  return (
+    <div className="space-y-4 pb-20 animate-in fade-in">
+      {/* TOTALIZADOR MAESTRO DE CUBETAS */}
+      <div className="bg-gradient-to-r from-blue-950/60 to-slate-900 p-4 rounded-2xl border border-blue-500/30 shadow-lg flex justify-between items-center">
+        <div>
+          <p className="text-[10px] text-blue-400 uppercase font-bold tracking-wider">Total Fondos Personales</p>
+          <p className="text-[10px] text-slate-400 mt-0.5">Resta este monto a tus bancos al cuadrar P2P</p>
+        </div>
+        <h2 className={`text-2xl font-mono font-black ${totalPersonalFunds < 0 ? 'text-red-400' : 'text-white'}`}>
+          ${totalPersonalFunds.toFixed(2)}
+        </h2>
+      </div>
+
+      {/* TRASPASO DE UTILIDADES */}
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl">
+        <h3 className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <Landmark size={14}/> Traspaso de Utilidades
+        </h3>
+        <div className="flex gap-2 items-center">
+          <input type="number" value={distributeAmount} onChange={e => setDistributeAmount(e.target.value)} placeholder="Ej: 1200" className="w-full bg-slate-950 p-3 rounded-xl text-white border border-slate-700 outline-none font-mono focus:border-blue-500"/>
+          <button onClick={handleDistribute} disabled={isProcessing} className="bg-blue-600 hover:bg-blue-500 p-3 rounded-xl text-white font-bold transition-all disabled:opacity-50">
+            {isProcessing ? <Loader2 size={20} className="animate-spin" /> : <PlusCircle size={20}/>}
+          </button>
+        </div>
+        <p className="text-[10px] text-slate-500 mt-2">Debita este monto de tu Caja P2P y aplica la regla 20/30/20/20/10 (+ excedentes).</p>
+      </div>
+
+      {/* ENCABEZADO CUBETAS + BOTONES TRANSFERIR Y EDITAR */}
+      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider pl-1 mt-6 flex justify-between items-center">
+        Mis Cubetas Personales
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              setTransferringBuckets(!transferringBuckets);
+              setEditingBuckets(false);
+              setTransferFeedback(null);
+            }}
+            title="Transferir entre cubetas"
+            className={`p-2 transition-colors ${transferringBuckets ? 'bg-emerald-500/20 text-emerald-400' : 'text-slate-400 hover:text-white bg-slate-800'} rounded-lg`}
+          >
+            {transferringBuckets ? <X size={14}/> : <ArrowRightLeft size={14}/>}
+          </button>
+          <button
+            onClick={() => {
+              setTempBuckets(buckets);
+              setEditingBuckets(!editingBuckets);
+              setTransferringBuckets(false);
+            }}
+            title="Ajuste manual de cubetas"
+            className={`p-2 transition-colors ${editingBuckets ? 'bg-blue-500/20 text-blue-400' : 'text-slate-400 hover:text-white bg-slate-800'} rounded-lg`}
+          >
+            {editingBuckets ? <X size={14}/> : <Edit2 size={14}/>}
+          </button>
+        </div>
       </h3>
 
+      {/* PANEL DE TRANSFERENCIA ENTRE CUBETAS (V4.17) */}
       {transferringBuckets && (
-          <div className="bg-slate-800/50 p-4 rounded-xl border border-emerald-500/30 mb-4 animate-in fade-in zoom-in-95 space-y-3">
-              <p className="text-xs text-emerald-400 font-bold uppercase text-center flex items-center justify-center gap-2">
-                  <ArrowRightLeft size={12}/> Mover Saldo entre Cubetas
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                  <div>
-                      <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Desde (Origen)</label>
-                      <select value={transferFrom} onChange={e=>setTransferFrom(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-xs outline-none">
-                          <option value="sostenimiento">Sostenimiento (${safeNum(buckets.sostenimiento).toFixed(2)})</option>
-                          <option value="proyectos">Proyectos (${safeNum(buckets.proyectos).toFixed(2)})</option>
-                          <option value="patrimonio">Patrimonio (${safeNum(buckets.patrimonio).toFixed(2)})</option>
-                          <option value="diezmo">Diezmo (${safeNum(buckets.diezmo).toFixed(2)})</option>
-                          <option value="reserva">Reserva (${safeNum(buckets.reserva).toFixed(2)})</option>
-                      </select>
-                  </div>
-                  <div>
-                      <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Hacia (Destino)</label>
-                      <select value={transferTo} onChange={e=>setTransferTo(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-xs outline-none">
-                          <option value="sostenimiento">Sostenimiento (${safeNum(buckets.sostenimiento).toFixed(2)})</option>
-                          <option value="proyectos">Proyectos (${safeNum(buckets.proyectos).toFixed(2)})</option>
-                          <option value="patrimonio">Patrimonio (${safeNum(buckets.patrimonio).toFixed(2)})</option>
-                          <option value="diezmo">Diezmo (${safeNum(buckets.diezmo).toFixed(2)})</option>
-                          <option value="reserva">Reserva (${safeNum(buckets.reserva).toFixed(2)})</option>
-                      </select>
-                  </div>
-              </div>
-              <div>
-                  <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Monto a Transferir (USDT)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    placeholder="Ej: 50"
-                    value={transferAmount}
-                    onChange={e=>setTransferAmount(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm font-mono outline-none focus:border-emerald-500"
-                  />
-              </div>
-              {transferFeedback && (
-                  <p className={`text-[11px] font-medium text-center p-2 rounded-lg ${transferFeedback.type === 'error' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-                      {transferFeedback.text}
-                  </p>
-              )}
-              <button
-                onClick={handleTransferBuckets}
-                disabled={isProcessing}
-                className="w-full bg-emerald-600 py-2 rounded-lg text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-emerald-500 disabled:opacity-50"
-              >
-                  {isProcessing ? <Loader2 size={14} className="animate-spin"/> : <ArrowRightLeft size={14}/>} Ejecutar Transferencia
-              </button>
+        <div className="bg-slate-800/50 p-4 rounded-xl border border-emerald-500/30 mb-4 animate-in fade-in zoom-in-95 space-y-3">
+          <p className="text-xs text-emerald-400 font-bold uppercase text-center flex items-center justify-center gap-2">
+            <ArrowRightLeft size={12}/> Mover Saldo entre Cubetas
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Desde (Origen)</label>
+              <select value={transferFrom} onChange={e => setTransferFrom(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-xs outline-none">
+                <option value="sostenimiento">Sostenimiento (${safeNum(buckets.sostenimiento).toFixed(2)})</option>
+                <option value="proyectos">Proyectos (${safeNum(buckets.proyectos).toFixed(2)})</option>
+                <option value="patrimonio">Patrimonio (${safeNum(buckets.patrimonio).toFixed(2)})</option>
+                <option value="diezmo">Diezmo (${safeNum(buckets.diezmo).toFixed(2)})</option>
+                <option value="reserva">Reserva (${safeNum(buckets.reserva).toFixed(2)})</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Hacia (Destino)</label>
+              <select value={transferTo} onChange={e => setTransferTo(e.target.value)} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-xs outline-none">
+                <option value="sostenimiento">Sostenimiento (${safeNum(buckets.sostenimiento).toFixed(2)})</option>
+                <option value="proyectos">Proyectos (${safeNum(buckets.proyectos).toFixed(2)})</option>
+                <option value="patrimonio">Patrimonio (${safeNum(buckets.patrimonio).toFixed(2)})</option>
+                <option value="diezmo">Diezmo (${safeNum(buckets.diezmo).toFixed(2)})</option>
+                <option value="reserva">Reserva (${safeNum(buckets.reserva).toFixed(2)})</option>
+              </select>
+            </div>
           </div>
+          <div>
+            <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Monto a Transferir (USDT)</label>
+            <input
+              type="number"
+              step="0.01"
+              placeholder="Ej: 50"
+              value={transferAmount}
+              onChange={e => setTransferAmount(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm font-mono outline-none focus:border-emerald-500"
+            />
+          </div>
+          {transferFeedback && (
+            <p className={`text-[11px] font-medium text-center p-2 rounded-lg ${transferFeedback.type === 'error' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
+              {transferFeedback.text}
+            </p>
+          )}
+          <button
+            onClick={handleTransferBuckets}
+            disabled={isProcessing}
+            className="w-full bg-emerald-600 py-2 rounded-lg text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-emerald-500 disabled:opacity-50"
+          >
+            {isProcessing ? <Loader2 size={14} className="animate-spin"/> : <ArrowRightLeft size={14}/>} Ejecutar Transferencia
+          </button>
+        </div>
       )}
 
+      {/* PANEL DE AJUSTE MANUAL DE CUBETAS */}
       {editingBuckets && (
-// ... existing code ...
-            {mode === 'expense' && (
-                <>
-                <div className="bg-slate-950 p-3 rounded-lg border border-slate-700">
-                    <label className="text-[10px] text-slate-400 uppercase font-bold mb-2 block">Fondo de Origen (¿De dónde sale?)</label>
-                    <select value={sourceBucket} onChange={e=>setSourceBucket(e.target.value)} className="w-full bg-slate-900 p-2 rounded text-white text-xs border border-slate-600 outline-none">
-                        <option value="sostenimiento">🛡️ Sostenimiento Fijo (Mercado/Alquiler/Salidas)</option>
-                        <option value="proyectos">✈️ Proyectos / Viajes / Compras grandes</option>
-                        <option value="patrimonio">📈 Patrimonio / Inversiones</option>
-                        <option value="diezmo">❤️ Diezmo y Ofrendas</option>
-                        <option value="reserva">⚠️ Fondo de Reserva (Emergencias)</option>
-                        <option value="p2p">💼 Caja Operativa P2P (Afecta Ganancia P2P)</option>
-                    </select>
+        <div className="bg-slate-800/50 p-4 rounded-xl border border-blue-500/30 mb-4 animate-in fade-in zoom-in-95">
+          <p className="text-xs text-blue-400 font-bold mb-3 uppercase text-center flex items-center justify-center gap-2"><Edit2 size={12}/> Ajuste Manual de Cubetas</p>
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div><label className="text-[10px] text-slate-400">Diezmo</label><input type="number" value={tempBuckets.diezmo} onChange={e => setTempBuckets({ ...tempBuckets, diezmo: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+            <div><label className="text-[10px] text-slate-400">Sostenimiento</label><input type="number" value={tempBuckets.sostenimiento} onChange={e => setTempBuckets({ ...tempBuckets, sostenimiento: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+            <div><label className="text-[10px] text-slate-400">Proyectos</label><input type="number" value={tempBuckets.proyectos} onChange={e => setTempBuckets({ ...tempBuckets, proyectos: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+            <div><label className="text-[10px] text-slate-400">Patrimonio</label><input type="number" value={tempBuckets.patrimonio} onChange={e => setTempBuckets({ ...tempBuckets, patrimonio: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+            <div className="col-span-2"><label className="text-[10px] text-slate-400">Reserva</label><input type="number" value={tempBuckets.reserva} onChange={e => setTempBuckets({ ...tempBuckets, reserva: e.target.value })} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white text-sm"/></div>
+          </div>
+          <button
+            onClick={async () => {
+              try {
+                const newB = {
+                  diezmo: safeNum(tempBuckets.diezmo),
+                  sostenimiento: safeNum(tempBuckets.sostenimiento),
+                  proyectos: safeNum(tempBuckets.proyectos),
+                  patrimonio: safeNum(tempBuckets.patrimonio),
+                  reserva: safeNum(tempBuckets.reserva)
+                };
+                await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'budgets', 'buckets'), newB);
+                setEditingBuckets(false);
+                notify("Cubetas ajustadas manualmente.", "success");
+              } catch (e) {
+                notify("Error al guardar ajustes: " + e.message, "error");
+              }
+            }}
+            className="w-full bg-blue-600 py-2 rounded-lg text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-blue-500"
+          >
+            <Save size={14}/> Guardar Ajustes
+          </button>
+        </div>
+      )}
+
+      {/* CUADRÍCULA DE CUBETAS EXPANDIBLES */}
+      <div className="grid grid-cols-2 gap-3">
+        <div onClick={() => setActiveCard('diezmo')} className="bg-indigo-900/10 p-4 rounded-xl border border-indigo-500/20 cursor-pointer hover:bg-indigo-900/20 transition-colors">
+          <p className="text-[10px] text-indigo-400 uppercase font-bold mb-1 flex items-center justify-between">
+            <span className="flex items-center gap-1"><Heart size={12}/> Diezmo</span>
+            <ChevronRight size={12} className="opacity-60"/>
+          </p>
+          <h2 className={`text-xl font-mono font-bold ${safeNum(buckets.diezmo) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.diezmo).toFixed(2)}</h2>
+        </div>
+
+        <div onClick={() => setActiveCard('sostenimiento')} className="bg-orange-900/10 p-4 rounded-xl border border-orange-500/20 cursor-pointer hover:bg-orange-900/20 transition-colors">
+          <p className="text-[10px] text-orange-400 uppercase font-bold mb-1 flex items-center justify-between">
+            <span className="flex items-center gap-1"><ShieldCheck size={12}/> Sostenimiento</span>
+            <ChevronRight size={12} className="opacity-60"/>
+          </p>
+          <h2 className={`text-xl font-mono font-bold ${safeNum(buckets.sostenimiento) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.sostenimiento).toFixed(2)}</h2>
+        </div>
+
+        <div onClick={() => setActiveCard('patrimonio')} className="bg-emerald-900/10 p-4 rounded-xl border border-emerald-500/20 cursor-pointer hover:bg-emerald-900/20 transition-colors">
+          <p className="text-[10px] text-emerald-400 uppercase font-bold mb-1 flex items-center justify-between">
+            <span className="flex items-center gap-1"><TrendingUp size={12}/> Patrimonio</span>
+            <ChevronRight size={12} className="opacity-60"/>
+          </p>
+          <h2 className={`text-xl font-mono font-bold ${safeNum(buckets.patrimonio) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.patrimonio).toFixed(2)}</h2>
+        </div>
+
+        <div onClick={() => setActiveCard('proyectos')} className="bg-fuchsia-900/10 p-4 rounded-xl border border-fuchsia-500/20 cursor-pointer hover:bg-fuchsia-900/20 transition-colors">
+          <p className="text-[10px] text-fuchsia-400 uppercase font-bold mb-1 flex items-center justify-between">
+            <span className="flex items-center gap-1"><Plane size={12}/> Proyectos</span>
+            <ChevronRight size={12} className="opacity-60"/>
+          </p>
+          <h2 className={`text-xl font-mono font-bold ${safeNum(buckets.proyectos) < 0 ? 'text-red-400' : 'text-white'}`}>${safeNum(buckets.proyectos).toFixed(2)}</h2>
+        </div>
+
+        <div className="col-span-2 bg-red-900/10 p-4 rounded-xl border border-red-500/20">
+          <p className="text-[10px] text-red-400 uppercase font-bold mb-1 flex items-center gap-1"><AlertTriangle size={12}/> Fondo de Reserva / Emergencia</p>
+          <h2 className={`text-xl font-mono font-bold ${safeNum(buckets.reserva) < 0 ? 'text-red-400' : 'text-white'}`}>
+            ${safeNum(buckets.reserva).toFixed(2)} <span className="text-xs text-slate-500 font-normal">/ Meta: $1000</span>
+          </h2>
+          <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden mt-2">
+            <div className="h-full bg-red-500" style={{ width: `${Math.min((Math.max(0, safeNum(buckets.reserva)) / 1000) * 100, 100)}%` }}></div>
+          </div>
+        </div>
+      </div>
+
+      {/* ÚLTIMOS GASTOS CARGADOS A CUBETAS */}
+      <div className="pt-4">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider pl-1 mb-3 flex items-center gap-1.5">
+          <History size={13}/> Últimos Gastos de Cubetas
+        </h3>
+        {recentBucketExpenses.length === 0 ? (
+          <p className="text-center text-xs text-slate-600 py-4 bg-slate-900/50 rounded-xl border border-slate-800">
+            No hay gastos cargados a cubetas personales todavía.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {recentBucketExpenses.map(tx => (
+              <div key={tx.id} className="bg-slate-900 p-3 rounded-xl border border-slate-800 flex justify-between items-center">
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-slate-200 truncate">
+                    {tx.category || 'Gasto'} <span className="text-[10px] font-normal text-slate-500">• {tx.dateStr}</span>
+                  </p>
+                  <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                    <span className="px-1 py-0.5 rounded text-[8px] font-bold bg-blue-500/20 text-blue-400 mr-1.5">
+                      {tx.sourceBucket.toUpperCase()}
+                    </span>
+                    {tx.description || 'Sin nota'}
+                  </p>
                 </div>
-// ... existing code ...
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="font-mono text-xs font-bold text-red-400">-${safeNum(tx.expenseUSDT).toFixed(2)}</span>
+                  <button onClick={() => onDeleteTx(tx)} className="p-1.5 text-slate-600 hover:text-red-500 transition-colors" title="Borrar y devolver saldo a cubeta">
+                    <Trash2 size={14}/>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- MÓDULO 5: SIMULADORES ---
+function SimulatorModule({ notify }) {
+  const [tab, setTab] = useState('cycles'); 
+  return (
+    <div className="pb-20">
+      <div className="bg-slate-900 p-2 sticky top-0 z-50 border-b border-slate-800">
+        <div className="flex bg-slate-950 p-1 rounded-xl overflow-x-auto no-scrollbar gap-1">
+          <button onClick={() => setTab('cycles')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'cycles' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-500'}`}>Ciclos</button>
+          <button onClick={() => setTab('telegram')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'telegram' ? 'bg-slate-800 text-blue-400 shadow-sm' : 'text-slate-500'}`}>Tele-P2P</button>
+          <button onClick={() => setTab('simple')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'simple' ? 'bg-slate-800 text-emerald-400 shadow-sm' : 'text-slate-500'}`}>Brecha</button>
+          <button onClick={() => setTab('btc')} className={`flex-1 py-2 px-3 text-[10px] font-bold uppercase rounded-lg whitespace-nowrap transition-colors ${tab === 'btc' ? 'bg-slate-800 text-orange-400 shadow-sm' : 'text-slate-500'}`}>BTC-Tri</button>
+        </div>
+      </div>
+      {tab === 'cycles' && <CycleSimulator />}
+      {tab === 'telegram' && <TelegramArbitrageCalc notify={notify} />}
+      {tab === 'simple' && <SimpleGapCalculator />}
+      {tab === 'btc' && <BtcTriangulationCalc />}
+    </div>
+  );
+}
+
+function TelegramArbitrageCalc({ notify }) {
+  const [adPrice, setAdPrice] = useState(900);
+  const [tonUsdt, setTonUsdt] = useState(1.72);
+  const [sellUsdt, setSellUsdt] = useState(533);
+  const [isLoadingPrice, setIsLoadingPrice] = useState(false);
+  const bankFeePM = 0.003; 
+
+  const fetchTonPrice = async () => {
+    setIsLoadingPrice(true);
+    try {
+      const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd');
+      const data = await response.json();
+      if (data && data['the-open-network'] && data['the-open-network'].usd) {
+        setTonUsdt(data['the-open-network'].usd);
+        notify("Precio TON actualizado.", "success");
+      }
+    } catch (error) {
+      notify("Error de conexión con CoinGecko.", "error");
+    } finally {
+      setIsLoadingPrice(false);
+    }
+  };
+
+  const effectivePriceBank = adPrice;
+  const impliedUsdtBank = tonUsdt > 0 ? effectivePriceBank / tonUsdt : 0;
+  const gapBank = impliedUsdtBank > 0 ? ((sellUsdt - impliedUsdtBank) / impliedUsdtBank) * 100 : 0;
+
+  const effectivePricePM = adPrice * (1 + bankFeePM);
+  const impliedUsdtPM = tonUsdt > 0 ? effectivePricePM / tonUsdt : 0;
+  const gapPM = impliedUsdtPM > 0 ? ((sellUsdt - impliedUsdtPM) / impliedUsdtPM) * 100 : 0;
+
+  return (
+    <div className="p-4 space-y-4 animate-in fade-in">
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800">
+        <h3 className="text-xs text-blue-400 font-bold uppercase mb-4 flex items-center gap-2"><MessageCircle size={14}/> Compra Implícita USDT (Vía TON)</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Precio Anuncio (Bs por 1 TON)</label>
+            <input type="number" value={adPrice} onChange={e => setAdPrice(parseFloat(e.target.value) || 0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 font-bold uppercase mb-1 flex justify-between items-center">
+                <span>Ref. TON/USDT</span>
+                <button onClick={fetchTonPrice} disabled={isLoadingPrice} className="text-blue-400 hover:text-white transition-colors bg-blue-500/10 p-1 rounded">
+                  {isLoadingPrice ? <Loader2 size={12} className="animate-spin"/> : <RefreshCw size={12}/>}
+                </button>
+              </label>
+              <input type="number" step="0.01" value={tonUsdt} onChange={e => setTonUsdt(parseFloat(e.target.value) || 0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Venta Final USDT (Bs)</label>
+              <input type="number" value={sellUsdt} onChange={e => setSellUsdt(parseFloat(e.target.value) || 0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-1 bg-blue-500"></div>
+          <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">Mismo Banco</p>
+          <h2 className={`text-2xl font-bold ${gapBank > 0 ? 'text-emerald-400' : 'text-red-400'}`}>{gapBank > 0 ? '+' : ''}{gapBank.toFixed(2)}%</h2>
+          <div className="mt-2 pt-2 border-t border-slate-800">
+            <p className="text-[10px] text-slate-500">Costo Real</p>
+            <p className="text-sm font-mono text-white">{impliedUsdtBank.toFixed(2)}</p>
+          </div>
+        </div>
+        <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-1 bg-purple-500"></div>
+          <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">Pago Móvil</p>
+          <h2 className={`text-2xl font-bold ${gapPM > 0 ? 'text-emerald-400' : 'text-red-400'}`}>{gapPM > 0 ? '+' : ''}{gapPM.toFixed(2)}%</h2>
+          <div className="mt-2 pt-2 border-t border-slate-800">
+            <p className="text-[10px] text-slate-500">Costo Real</p>
+            <p className="text-sm font-mono text-white">{impliedUsdtPM.toFixed(2)}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CycleSimulator() {
+  const [initialCapital, setInitialCapital] = useState(500);
+  const [sellRate, setSellRate] = useState(40);
+  const [buyRate, setBuyRate] = useState(39.5);
+  const [commission, setCommission] = useState(0.2);
+  const [numCycles, setNumCycles] = useState(1);
+  const [compound, setCompound] = useState(false);
+  const [results, setResults] = useState({ profitUsdt: 0, profitPercentage: 0, totalVolume: 0, netBs: 0, netUsdtReturned: 0, sellFeeBs: 0, buyFeeUsdt: 0, totalFeesPaidUsdt: 0 });
+
+  useEffect(() => {
+    if (initialCapital <= 0 || sellRate <= 0 || buyRate <= 0) {
+      setResults({ profitUsdt: 0, profitPercentage: 0, totalVolume: 0, netBs: 0, netUsdtReturned: 0, sellFeeBs: 0, buyFeeUsdt: 0, totalFeesPaidUsdt: 0 });
+      return;
+    }
+    let currentCapital = initialCapital;
+    let totalVolume = 0;
+    let totalFeesPaidUsdt = 0;
+    const singleGrossBs = initialCapital * sellRate;
+    const singleSellFeeBs = singleGrossBs * (commission / 100);
+    const singleNetBs = singleGrossBs - singleSellFeeBs;
+    const singleGrossUsdt = singleNetBs / buyRate;
+    const singleBuyFeeUsdt = singleGrossUsdt * (commission / 100);
+    const singleNetUsdt = singleGrossUsdt - singleBuyFeeUsdt;
+
+    for (let i = 0; i < numCycles; i++) {
+      const grossBs = currentCapital * sellRate;
+      const sellFeeBs = grossBs * (commission / 100);
+      const netBs = grossBs - sellFeeBs;
+      const grossUsdtReturned = netBs / buyRate;
+      const buyFeeUsdt = grossUsdtReturned * (commission / 100);
+      const netUsdtReturned = grossUsdtReturned - buyFeeUsdt;
+      totalVolume += (currentCapital + grossUsdtReturned);
+      totalFeesPaidUsdt += ((sellFeeBs / sellRate) + buyFeeUsdt);
+      if (compound) currentCapital = netUsdtReturned;
+      else currentCapital = initialCapital;
+    }
+
+    const totalProfit = compound ? currentCapital - initialCapital : (singleNetUsdt - initialCapital) * numCycles;
+    setResults({
+      profitUsdt: totalProfit,
+      profitPercentage: (totalProfit / initialCapital) * 100,
+      totalVolume,
+      netBs: singleNetBs,
+      netUsdtReturned: singleNetUsdt,
+      sellFeeBs: singleSellFeeBs,
+      buyFeeUsdt: singleBuyFeeUsdt,
+      totalFeesPaidUsdt
+    });
+  }, [initialCapital, sellRate, buyRate, commission, numCycles, compound]);
+
+  const formatUsdt = (val) => new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
+
+  return (
+    <div className="animate-in fade-in">
+      <div className="bg-slate-900/95 backdrop-blur border-b border-slate-800 p-4 sticky top-[57px] z-40 shadow-lg">
+        <div className="flex justify-between items-center">
+          <div>
+            <p className="text-[10px] text-slate-500 uppercase font-bold">Ganancia Estimada</p>
+            <div className="flex items-baseline gap-2">
+              <h2 className={`text-2xl font-bold ${results.profitUsdt >= 0 ? 'text-white' : 'text-red-500'}`}>
+                {results.profitUsdt > 0 ? '+' : ''}{formatUsdt(results.profitUsdt)} <span className="text-sm font-normal text-slate-500">USDT</span>
+              </h2>
+              <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${results.profitUsdt >= 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+                {results.profitPercentage.toFixed(2)}%
+              </span>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-[10px] text-slate-500 uppercase font-bold">Spread</p>
+            <p className="text-lg font-bold text-blue-500">{sellRate > 0 ? (((sellRate - buyRate) / sellRate) * 100).toFixed(2) : '0.00'}%</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="p-4 space-y-4">
+        <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800">
+          <div className="mb-4">
+            <label className="text-xs text-slate-500 font-bold block mb-1">Capital Inicial (USDT)</label>
+            <input type="number" value={initialCapital} onChange={e => setInitialCapital(parseFloat(e.target.value) || 0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold text-lg"/>
+          </div>
+          <div className="mb-4">
+            <div className="text-xs text-slate-500 font-bold mb-2 flex justify-between items-center">
+              <span>Ciclos Repetidos</span>
+              <div className="flex items-center gap-2">
+                <span className={`text-[10px] uppercase font-bold ${compound ? 'text-purple-400' : 'text-slate-500'}`}>{compound ? 'Compuesto' : 'Simple'}</span>
+                <div onClick={() => setCompound(!compound)} className="cursor-pointer text-slate-400 hover:text-white transition-colors">
+                  {compound ? <ToggleRight size={24} className="text-purple-500"/> : <ToggleLeft size={24}/>}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <input type="range" min="1" max="20" value={numCycles} onChange={e => setNumCycles(parseInt(e.target.value))} className="flex-1 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"/>
+              <span className="text-blue-400 font-bold font-mono text-lg w-8 text-center">{numCycles}</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <div>
+              <label className="text-[10px] text-red-500 font-bold uppercase block mb-1">Venta (Roja)</label>
+              <input type="number" value={sellRate} onChange={e => setSellRate(parseFloat(e.target.value) || 0)} className="w-full bg-slate-950 border border-red-500/30 rounded-xl p-2 text-white font-mono outline-none"/>
+            </div>
+            <div>
+              <label className="text-[10px] text-emerald-500 font-bold uppercase block mb-1">Compra (Verde)</label>
+              <input type="number" value={buyRate} onChange={e => setBuyRate(parseFloat(e.target.value) || 0)} className="w-full bg-slate-950 border border-emerald-500/30 rounded-xl p-2 text-white font-mono outline-none"/>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 font-bold mb-2 flex justify-between">
+              <span>Comisión Exchange</span>
+              <span className="text-blue-400">{commission}%</span>
+            </label>
+            <input type="range" min="0" max="1" step="0.01" value={commission} onChange={e => setCommission(parseFloat(e.target.value))} className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"/>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SimpleGapCalculator() {
+  const [buy, setBuy] = useState('');
+  const [sell, setSell] = useState('');
+  const [amount, setAmount] = useState('100');
+  const gap = safeNum(sell) - safeNum(buy);
+  const percent = safeNum(buy) > 0 ? (gap / safeNum(buy)) * 100 : 0;
+  const profit = safeNum(sell) > 0 ? (gap * safeNum(amount)) / safeNum(sell) : 0; 
+
+  return (
+    <div className="p-4 mt-4 animate-in fade-in">
+      <div className="bg-slate-900 p-6 rounded-3xl border border-slate-800 shadow-xl">
+        <div className="text-center mb-6">
+          <p className="text-xs text-slate-400 uppercase font-bold mb-2">Margen Bruto</p>
+          <h2 className={`text-4xl font-black ${percent > 1 ? 'text-emerald-400' : percent > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+            {percent.toFixed(2)}%
+          </h2>
+        </div>
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="text-xs text-emerald-400 font-bold block mb-1">Compra</label>
+            <input type="number" value={buy} onChange={e => setBuy(e.target.value)} className="w-full bg-slate-950 p-3 rounded-xl text-white border border-slate-700 outline-none font-mono"/>
+          </div>
+          <div>
+            <label className="text-xs text-red-400 font-bold block mb-1">Venta</label>
+            <input type="number" value={sell} onChange={e => setSell(e.target.value)} className="w-full bg-slate-950 p-3 rounded-xl text-white border border-slate-700 outline-none font-mono"/>
+          </div>
+        </div>
+        <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+          <label className="text-[10px] text-slate-500 uppercase font-bold mb-1 block">Inversión (USDT)</label>
+          <div className="flex gap-2 items-center">
+            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} className="w-24 bg-transparent border-b border-slate-700 text-white font-bold outline-none"/>
+            <span className="text-slate-400 text-sm">USDT</span>
+            <div className="ml-auto text-right">
+              <p className="text-[10px] text-slate-500">Ganancia</p>
+              <p className={`font-bold ${profit > 0 ? 'text-emerald-400' : 'text-slate-400'}`}>+ {profit.toFixed(2)}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- SIMULADOR AVANZADO BTC-TRIANGULACIÓN (CASCADA DE APIs + MANUAL) ---
+function BtcTriangulationCalc() {
+  const [capital, setCapital] = useState(1000);
+  const [sellUsdt, setSellUsdt] = useState(972);
+  const [buyBtc, setBuyBtc] = useState(81000000);
+  const [spotBtc, setSpotBtc] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [apiSource, setApiSource] = useState('Manual');
+
+  const [feeSellBinance, setFeeSellBinance] = useState(true);
+  const [feeBuyBinance, setFeeBuyBinance] = useState(true);
+  const [feePM, setFeePM] = useState(true);
+
+  const fetchSpotPrice = async () => {
+    setIsLoading(true);
+    setApiSource('Buscando...');
+    try {
+      const resCG = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+      const dataCG = await resCG.json();
+      if (dataCG && dataCG.bitcoin && dataCG.bitcoin.usd) {
+        setSpotBtc(parseFloat(dataCG.bitcoin.usd));
+        setApiSource('CoinGecko');
+        setIsLoading(false);
+        return;
+      }
+    } catch (e) { console.warn("Fallo CoinGecko, intentando Binance..."); }
+
+    try {
+      const resBin = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+      const dataBin = await resBin.json();
+      if (dataBin && dataBin.price) {
+        setSpotBtc(parseFloat(dataBin.price));
+        setApiSource('Binance');
+        setIsLoading(false);
+        return;
+      }
+    } catch (e) { console.warn("Fallo Binance, intentando KuCoin..."); }
+
+    try {
+      const resKu = await fetch('https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=BTC-USDT');
+      const dataKu = await resKu.json();
+      if (dataKu && dataKu.data && dataKu.data.price) {
+        setSpotBtc(parseFloat(dataKu.data.price));
+        setApiSource('KuCoin');
+        setIsLoading(false);
+        return;
+      }
+    } catch (e) { console.warn("Fallo KuCoin."); }
+    
+    setApiSource('Fallo de red - Usa Manual');
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    fetchSpotPrice();
+    const interval = setInterval(fetchSpotPrice, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const feeSellVal = feeSellBinance ? 0.002 : 0; 
+  const feeBuyVal = feeBuyBinance ? 0.002 : 0;   
+  const feePmVal = feePM ? 0.003 : 0;            
+
+  const grossBs = capital * sellUsdt;
+  const grossBtc = buyBtc > 0 ? grossBs / buyBtc : 0;
+  const grossUsdt = grossBtc * spotBtc;
+  const grossSpread = capital > 0 ? ((grossUsdt / capital) - 1) * 100 : 0;
+  
+  const netUsdtSold = capital * (1 - feeSellVal);
+  const netBsReceived = netUsdtSold * sellUsdt;
+  
+  const netBsForBtc = netBsReceived * (1 - feePmVal);
+  const rawBtcBought = buyBtc > 0 ? netBsForBtc / buyBtc : 0;
+  
+  const netBtcBought = rawBtcBought * (1 - feeBuyVal);
+  const netFinalUsdt = netBtcBought * spotBtc;
+
+  const netProfit = netFinalUsdt - capital;
+  const netSpread = capital > 0 ? ((netFinalUsdt / capital) - 1) * 100 : 0;
+  const isProfitable = netProfit > 0;
+  
+  const netImpliedBuyRate = netFinalUsdt > 0 ? netBsReceived / netFinalUsdt : 0;
+
+  return (
+    <div className="p-4 space-y-4 animate-in fade-in">
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl">
+        <h3 className="text-xs text-orange-400 font-bold uppercase mb-4 flex items-center gap-2">
+          <ArrowRightLeft size={14}/> Arbitraje Triangular (USDT <ArrowRight size={10}/> Bs <ArrowRight size={10}/> BTC)
+        </h3>
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] text-slate-500 font-bold uppercase block mb-1">Capital Inicial (USDT)</label>
+            <input type="number" value={capital} onChange={e => setCapital(parseFloat(e.target.value) || 0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none focus:border-orange-500 text-lg"/>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="relative">
+              <div className="absolute top-0 right-0 p-2 opacity-20"><TrendingDown size={32}/></div>
+              <label className="text-[10px] text-red-400 font-bold uppercase block mb-1">1. Vendes USDT a:</label>
+              <input type="number" step="0.01" value={sellUsdt} onChange={e => setSellUsdt(parseFloat(e.target.value) || 0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/>
+            </div>
+            <div className="relative">
+              <div className="absolute top-0 right-0 p-2 opacity-20"><Bitcoin size={32}/></div>
+              <label className="text-[10px] text-emerald-400 font-bold uppercase block mb-1">2. Compras BTC a:</label>
+              <input type="number" value={buyBtc} onChange={e => setBuyBtc(parseFloat(e.target.value) || 0)} className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white font-bold outline-none"/>
+            </div>
+          </div>
+          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-3">
+            <p className="text-[10px] text-slate-500 font-bold uppercase border-b border-slate-800 pb-1">Gestión de Comisiones</p>
+            <div className="flex justify-between items-center">
+              <div><p className="text-xs text-slate-300">Venta USDT (Binance)</p><p className="text-[9px] text-slate-500">-0.2% en USDT</p></div>
+              <button onClick={() => setFeeSellBinance(!feeSellBinance)} className={`p-1 transition-colors ${feeSellBinance ? 'text-orange-400' : 'text-slate-600'}`}>
+                {feeSellBinance ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}
+              </button>
+            </div>
+            <div className="flex justify-between items-center">
+              <div><p className="text-xs text-slate-300">Envío Pago Móvil</p><p className="text-[9px] text-slate-500">-0.3% en Bs</p></div>
+              <button onClick={() => setFeePM(!feePM)} className={`p-1 transition-colors ${feePM ? 'text-orange-400' : 'text-slate-600'}`}>
+                {feePM ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}
+              </button>
+            </div>
+            <div className="flex justify-between items-center">
+              <div><p className="text-xs text-slate-300">Compra BTC (Binance)</p><p className="text-[9px] text-slate-500">-0.2% en BTC</p></div>
+              <button onClick={() => setFeeBuyBinance(!feeBuyBinance)} className={`p-1 transition-colors ${feeBuyBinance ? 'text-orange-400' : 'text-slate-600'}`}>
+                {feeBuyBinance ? <ToggleRight size={24}/> : <ToggleLeft size={24}/>}
+              </button>
+            </div>
+          </div>
+          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 relative">
+            <label className="text-[10px] text-slate-500 font-bold uppercase mb-2 flex justify-between items-center">
+              <span>3. Mercado Spot BTC/USDT</span>
+              <div className="flex gap-2">
+                <span className="text-[9px] text-slate-500 bg-slate-900 px-2 py-1 rounded">Fuente: {apiSource}</span>
+                <button onClick={fetchSpotPrice} disabled={isLoading} className="text-orange-400 hover:text-white transition-colors bg-orange-500/10 p-1 rounded">
+                  {isLoading ? <Loader2 size={12} className="animate-spin"/> : <RefreshCcw size={12}/>}
+                </button>
+              </div>
+            </label>
+            <div className="flex justify-between items-center bg-slate-900 border border-slate-700 rounded-xl overflow-hidden focus-within:border-orange-500 transition-colors">
+              <span className="pl-3 text-slate-400 font-bold">$</span>
+              <input
+                type="number"
+                step="0.01"
+                value={spotBtc}
+                onChange={e => { setSpotBtc(parseFloat(e.target.value) || 0); setApiSource('Manual'); }}
+                className="w-full bg-transparent p-3 text-white font-mono text-2xl outline-none"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-4 opacity-5"><Receipt size={80}/></div>
+        <h3 className="text-xs text-slate-400 font-bold uppercase mb-4 flex items-center gap-2 border-b border-slate-800 pb-2">Ficha Técnica de Operación</h3>
+        <div className="space-y-3 relative z-10 text-sm">
+          <div className="flex justify-between items-center"><span className="text-slate-400">Capital Inicial</span><span className="font-mono text-white">{capital.toFixed(2)} USDT</span></div>
+          <div className="flex justify-between items-center"><span className="text-slate-400">Bs Obtenidos</span><span className="font-mono text-slate-300">Bs {netBsReceived.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
+          <div className="flex justify-between items-center"><span className="text-slate-400">BTC Comprados</span><span className="font-mono text-orange-400">{netBtcBought.toFixed(8)} BTC</span></div>
+          <div className="flex justify-between items-center border-t border-slate-800 pt-3"><span className="text-slate-300 font-bold">USDT Finales</span><span className="font-mono font-bold text-lg text-white">{netFinalUsdt.toFixed(2)} USDT</span></div>
+          <div className="bg-blue-900/20 p-3 rounded-lg border border-blue-500/30 mt-4 mb-4">
+            <p className="text-[10px] text-blue-400 uppercase font-bold mb-1">Tasa Real de Recompra USDT</p>
+            <div className="flex justify-between items-end">
+              <span className="font-mono text-xl text-blue-100">{netImpliedBuyRate.toFixed(2)} Bs</span>
+              <span className="text-xs text-blue-400">(Vendiste a {sellUsdt})</span>
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4 mt-6 border-t border-slate-800 pt-4">
+          <div>
+            <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha Bruta (0% Com)</p>
+            <p className="text-lg font-mono text-slate-400">{grossSpread > 0 ? '+' : ''}{grossSpread.toFixed(2)}%</p>
+          </div>
+          <div className="text-right">
+            <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Brecha NETA</p>
+            <h2 className={`text-2xl font-black ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>{isProfitable ? '+' : ''}{netSpread.toFixed(2)}%</h2>
+          </div>
+        </div>
+        <div className="mt-4 pt-4 border-t border-slate-800 text-center">
+          <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Ganancia Neta Calculada</p>
+          <p className={`font-mono font-bold text-2xl ${isProfitable ? 'text-emerald-400' : 'text-red-400'}`}>{isProfitable ? '+' : ''}${netProfit.toFixed(2)}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- FORMULARIO DE GASTOS Y MICRO-P2P (CON PATRIMONIO HABILITADO V4.17) ---
+function TradeForm({ onTrade, onCancel, forcedMode, isGuest, notify }) {
+  const [mode, setMode] = useState(forcedMode || 'buy'); 
+  const [inputVal, setInputVal] = useState(''); 
+  const [rate, setRate] = useState(''); 
+  const [expenseCategory, setExpenseCategory] = useState('Comida'); 
+  const [expenseNote, setExpenseNote] = useState(''); 
+  const [expenseCurrency, setExpenseCurrency] = useState('VES');
+  const [sourceBucket, setSourceBucket] = useState('sostenimiento'); 
+  const [tradeDate, setTradeDate] = useState(getLocalDateString());
+  const [submitting, setSubmitting] = useState(false);
+
+  const valInput = parseFloat(inputVal) || 0;
+  const valRate = parseFloat(rate) || 0;
+  let calcUSDT = 0;
+  let calcBS = 0;
+  let feeUSDT_Calculated = 0;
+  
+  if (mode === 'buy') {
+    calcUSDT = valInput;
+    calcBS = valInput * valRate;
+  } else if (mode === 'sell') {
+    calcBS = valInput;
+    calcUSDT = valRate > 0 ? valInput / valRate : 0;
+  }
+  
+  const handleSubmit = async () => {
+    if (submitting) return;
+    if (valInput <= 0) {
+      notify("Ingresa un monto válido mayor a 0.", "error");
+      return;
+    }
+
+    setSubmitting(true);
+    let ok = false;
+    try {
+      if (mode === 'expense') {
+        ok = await onTrade({
+          type: 'expense',
+          currency: expenseCurrency,
+          amountBS: expenseCurrency === 'VES' ? valInput : 0,
+          amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput / valRate : 0),
+          rate: valRate,
+          category: expenseCategory,
+          description: expenseNote,
+          dateStr: tradeDate,
+          sourceBucket: sourceBucket
+        });
+      } else if (mode === 'withdraw') {
+        ok = await onTrade({
+          type: 'withdraw',
+          currency: expenseCurrency,
+          amountBS: expenseCurrency === 'VES' ? valInput : 0,
+          amountUSDT: expenseCurrency === 'USDT' ? valInput : (valRate > 0 ? valInput / valRate : 0),
+          rate: valRate,
+          description: expenseNote,
+          dateStr: tradeDate
+        });
+      } else if (mode === 'capital') {
+        ok = await onTrade({
+          type: 'capital',
+          amount: valInput,
+          currency: 'USDT',
+          rate: valRate,
+          dateStr: tradeDate
+        });
+      } else {
+        ok = await onTrade({
+          type: mode,
+          amountUSDT: calcUSDT,
+          totalBS: calcBS,
+          rate: valRate,
+          feeUSDT: feeUSDT_Calculated,
+          dateStr: tradeDate
+        });
+      }
+
+      if (ok) {
+        setInputVal('');
+        setExpenseNote('');
+        onCancel();
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const categories = [
+    { id: 'Comida', icon: <Utensils size={16}/>, bg: 'bg-orange-600', border: 'border-orange-500' }, 
+    { id: 'Bodega', icon: <Store size={16}/>, bg: 'bg-amber-600', border: 'border-amber-500' }, 
+    { id: 'Frutas', icon: <Utensils size={16}/>, bg: 'bg-lime-600', border: 'border-lime-500' }, 
+    { id: 'Club', icon: <Heart size={16}/>, bg: 'bg-fuchsia-600', border: 'border-fuchsia-500' }, 
+    { id: 'Servicios', icon: <Zap size={16}/>, bg: 'bg-yellow-600', border: 'border-yellow-500' }, 
+    { id: 'Alquiler', icon: <Landmark size={16}/>, bg: 'bg-indigo-600', border: 'border-indigo-500' },
+    { id: 'Compras', icon: <ShoppingBag size={16}/>, bg: 'bg-emerald-600', border: 'border-emerald-500' }, 
+    { id: 'Ropa', icon: <Shirt size={16}/>, bg: 'bg-pink-600', border: 'border-pink-500' }, 
+    { id: 'Ocio', icon: <Gamepad2 size={16}/>, bg: 'bg-red-600', border: 'border-red-500' }, 
+    { id: 'Transporte', icon: <Car size={16}/>, bg: 'bg-blue-600', border: 'border-blue-500' }, 
+    { id: 'Salud', icon: <Stethoscope size={16}/>, bg: 'bg-teal-600', border: 'border-teal-500' }, 
+    { id: 'Caridad', icon: <Gift size={16}/>, bg: 'bg-rose-600', border: 'border-rose-500' }, 
+    { id: 'Regalos', icon: <Gift size={16}/>, bg: 'bg-violet-600', border: 'border-violet-500' }, 
+    { id: 'Viajes', icon: <Plane size={16}/>, bg: 'bg-cyan-600', border: 'border-cyan-500' }, 
+    { id: 'Diezmo', icon: <Heart size={16}/>, bg: 'bg-indigo-600', border: 'border-indigo-500' }, 
+    { id: 'Otros', icon: <HelpCircle size={16}/>, bg: 'bg-slate-600', border: 'border-slate-500' }
+  ];
+  
+  return (
+    <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 animate-in fade-in slide-in-from-bottom-8">
+      {!forcedMode && (
+        <div className="flex bg-slate-950 p-1 rounded-lg mb-6 gap-1 overflow-x-auto no-scrollbar">
+          {['buy', 'sell', 'capital', 'withdraw'].map(m => (
+            <button key={m} onClick={() => setMode(m)} className={`flex-1 py-2 px-2 text-[10px] font-bold uppercase rounded-md transition-colors whitespace-nowrap ${mode === m ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>
+              {m === 'buy' ? 'Comprar' : m === 'sell' ? 'Vender' : m === 'capital' ? 'Fondeo' : 'Retiro'}
+            </button>
+          ))}
+        </div>
+      )}
+      
+      {mode === 'expense' || mode === 'withdraw' ? (
+        <div className="space-y-4">
+          <div className="flex bg-slate-950 p-1 rounded-lg">
+            <button onClick={() => setExpenseCurrency('VES')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${expenseCurrency === 'VES' ? 'bg-slate-800 text-white' : 'text-slate-600'}`}>En Bolívares</button>
+            <button onClick={() => setExpenseCurrency('USDT')} className={`flex-1 py-2 text-[10px] font-bold uppercase rounded ${expenseCurrency === 'USDT' ? 'bg-slate-800 text-emerald-400' : 'text-slate-600'}`}>En USDT</button>
+          </div>
+          
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-[10px] text-slate-400 uppercase font-bold">{expenseCurrency === 'VES' ? 'Monto (Bs)' : 'Monto (USDT)'}</label>
+              <input type="number" step="0.01" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/>
+            </div>
+            {expenseCurrency === 'VES' && (
+              <div className="flex-1">
+                <label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Manual (Opcional)</label>
+                <input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} placeholder="Ej: 40.5" className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/>
+              </div>
+            )}
+          </div>
+
+          {mode === 'expense' && (
+            <>
+              <div className="bg-slate-950 p-3 rounded-lg border border-slate-700">
+                <label className="text-[10px] text-slate-400 uppercase font-bold mb-2 block">Fondo de Origen (¿De dónde sale?)</label>
+                <select value={sourceBucket} onChange={e => setSourceBucket(e.target.value)} className="w-full bg-slate-900 p-2 rounded text-white text-xs border border-slate-600 outline-none">
+                  <option value="sostenimiento">🛡️ Sostenimiento Fijo (Mercado/Alquiler/Salidas)</option>
+                  <option value="proyectos">✈️ Proyectos / Viajes / Compras grandes</option>
+                  <option value="patrimonio">📈 Patrimonio / Inversiones</option>
+                  <option value="diezmo">❤️ Diezmo y Ofrendas</option>
+                  <option value="reserva">⚠️ Fondo de Reserva (Emergencias)</option>
+                  <option value="p2p">💼 Caja Operativa P2P (Afecta Ganancia P2P)</option>
+                </select>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {categories.map(cat => (
+                  <button
+                    key={cat.id}
+                    onClick={() => setExpenseCategory(cat.id)}
+                    className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-[10px] font-bold transition-all ${expenseCategory === cat.id ? `${cat.bg} ${cat.border} text-white shadow-md` : `bg-slate-950 border-slate-700 text-slate-500`}`}
+                  >
+                    {cat.icon} {cat.id}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          
+          {mode === 'withdraw' && (
+            <div className="bg-slate-800/30 p-3 rounded-lg text-xs text-slate-400 text-center border border-slate-700">
+              El Retiro descuenta saldo pero NO se suma a tus Fugas/Gastos. Úsalo para ahorros o pagos pendientes a terceros.
+            </div>
+          )}
+
+          <input
+            type="text"
+            value={expenseNote}
+            onChange={e => setExpenseNote(e.target.value)}
+            className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none"
+            placeholder={mode === 'withdraw' ? "Motivo del retiro (Ej: Pago Karen)" : "Nota / Detalle"}
+          />
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] text-slate-400 uppercase font-bold">{mode === 'buy' ? 'USDT a Comprar' : mode === 'sell' ? 'Bs Recibidos' : 'Monto (USDT)'}</label>
+            <input type="number" step="0.01" value={inputVal} onChange={e => setInputVal(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none font-mono text-lg"/>
+          </div>
+          <div>
+            <label className="text-[10px] text-slate-400 uppercase font-bold">Tasa Referencia</label>
+            <input type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none"/>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-4 pt-4 border-t border-slate-800">
+        <label className="text-[10px] text-slate-400 uppercase font-bold mb-1 flex items-center gap-1"><CalendarDays size={12}/> Fecha Contable</label>
+        <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)} className="w-full bg-slate-950 p-3 rounded-lg text-white border border-slate-700 outline-none focus:border-blue-500 text-sm [color-scheme:dark]"/>
+      </div>
+
+      <div className="flex gap-3 mt-6">
+        <button onClick={onCancel} className="flex-1 py-3 bg-slate-800 rounded-lg text-slate-400 font-bold">Cancelar</button>
+        <button onClick={handleSubmit} disabled={submitting} className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 rounded-lg text-white font-bold shadow-lg disabled:opacity-50 flex items-center justify-center gap-2">
+          {submitting && <Loader2 size={16} className="animate-spin"/>}
+          Guardar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function NavButton({ icon, label, active, onClick, highlight }) {
+  return (
+    <button onClick={onClick} className={`flex flex-col items-center gap-1 p-2 rounded-xl transition-all ${active ? (highlight ? 'text-blue-400 bg-blue-500/10' : 'text-emerald-400 bg-emerald-400/10') : 'text-slate-500'}`}>
+      {React.cloneElement(icon, { size: 20 })}
+      <span className="text-[10px] font-medium">{label}</span>
+    </button>
+  );
+}
